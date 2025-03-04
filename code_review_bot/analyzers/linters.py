@@ -3,6 +3,12 @@ import os
 import subprocess
 import json
 import re
+import logging
+from utils.config import get_config 
+
+# Configure logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def analyze_code(code, filename="temp.py"):
     """
@@ -42,9 +48,32 @@ def analyze_code(code, filename="temp.py"):
             os.unlink(temp_path)
 
 def run_flake8(file_path):
-    """Exécute Flake8 sur le fichier et parse les résultats"""
+    """Exécute Flake8 sur le fichier et parse les résultats avec cognitive complexity"""
+    # Récupérer la configuration
+    config = get_config()
+    flake8_config = config.get("flake8", {})
+    
+    # Préparer les arguments avec la configuration
+    cmd = ["flake8"]
+    
+    # Ajouter les options de configuration
+    if "max-line-length" in flake8_config:
+        cmd.extend(["--max-line-length", str(flake8_config["max-line-length"])])
+    
+    if "select" in flake8_config:
+        cmd.extend(["--select", ",".join(flake8_config["select"])])
+    
+    if "ignore" in flake8_config:
+        cmd.extend(["--ignore", ",".join(flake8_config["ignore"])])
+    
+    if "max-cognitive-complexity" in flake8_config:
+        cmd.extend(["--max-cognitive-complexity", str(flake8_config["max-cognitive-complexity"])])
+    
+    cmd.append(file_path)
+    
+    # Exécuter flake8 avec les options
     result = subprocess.run(
-        ["flake8", "--format=json", file_path],
+        cmd,
         capture_output=True,
         text=True
     )
@@ -52,31 +81,31 @@ def run_flake8(file_path):
     issues = []
     
     if result.stdout:
-        try:
-            flake8_output = json.loads(result.stdout)
-            for file_errors in flake8_output.values():
-                for error in file_errors:
-                    issues.append({
-                        "line": error["line_number"],
-                        "column": error["column_number"],
-                        "type": "style",
-                        "message": error["text"],
-                        "source": "flake8"
-                    })
-        except json.JSONDecodeError:
-            # Fallback pour les versions de flake8 qui ne supportent pas le format JSON
-            lines = result.stdout.splitlines()
-            for line in lines:
-                match = re.match(r'.*:(\d+):(\d+): (\w+) (.*)', line)
-                if match:
-                    line_num, col, code, msg = match.groups()
-                    issues.append({
-                        "line": int(line_num),
-                        "column": int(col),
-                        "type": "style",
-                        "message": f"{code}: {msg}",
-                        "source": "flake8"
-                    })
+        lines = result.stdout.splitlines()
+        for line in lines:
+            # Format standard: file_path:line:column: error_code error_message
+            match = re.search(r'.*:(\d+):(\d+): ([A-Z\d]+) (.*)', line)
+            if match:
+                line_num, col, code, msg = match.groups()
+                
+                # Déterminer le type en fonction du code
+                issue_type = "style"
+                if code.startswith("CCR"):
+                    issue_type = "complexity"
+                elif code.startswith("F"):
+                    issue_type = "error"
+                elif code.startswith("E"):
+                    issue_type = "error"
+                elif code.startswith("W"):
+                    issue_type = "warning"
+                
+                issues.append({
+                    "line": int(line_num),
+                    "column": int(col),
+                    "type": issue_type,
+                    "message": f"{code}: {msg}",
+                    "source": "flake8"
+                })
     
     return issues
 
@@ -87,7 +116,6 @@ def run_pylint(file_path):
         capture_output=True,
         text=True
     )
-    
     issues = []
     
     if result.stdout:
@@ -114,7 +142,6 @@ def run_bandit(file_path):
         capture_output=True,
         text=True
     )
-    
     issues = []
     
     if result.stdout:
