@@ -6,7 +6,9 @@ Configuration globale pour le bot de code review
 DEFAULT_LINTER_CONFIG = {
     "flake8": {
         "max-line-length": 100,
-        "ignore": ["E203", "W503"]  # Compatibilité avec Black
+        "ignore": ["E203", "W503"],  # Compatibilité avec Black
+        "select": ["E", "F", "W", "C90", "SIM", "CCR"],  # Inclure les codes CCR pour cognitive complexity
+        "max-cognitive-complexity": 10  # Seuil au-delà duquel une alerte est générée 
     },
     "pylint": {
         "disable": [
