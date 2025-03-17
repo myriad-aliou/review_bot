@@ -17,14 +17,27 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           CHANGED_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path')
-          echo "Changed files:"
-          echo "$CHANGED_FILES"
+          echo "Changed files: $CHANGED_FILES"
 
-          echo "Fetching content of changed files..."
+          echo "Formatting files as JSON..."
+          JSON_PAYLOAD="{\"files\": ["
+          FIRST=true
+
           for FILE in $CHANGED_FILES; do
-            echo "-----------------------"
-            echo "File: $FILE"
-            echo "Content:"
-            cat "$FILE" || echo "File not found (possibly deleted or renamed)"
-            echo "-----------------------"
+            if [ -f "$FILE" ]; then
+              CONTENT=$(jq -Rs . < "$FILE")  # Convert file content to JSON string
+              if [ "$FIRST" = true ]; then
+                FIRST=false
+              else
+                JSON_PAYLOAD+=","
+              fi
+              JSON_PAYLOAD+="{\"filename\": \"$FILE\", \"content\": $CONTENT}"
+            fi
           done
+
+          JSON_PAYLOAD+="]}"
+          echo "JSON Payload:"
+          echo "$JSON_PAYLOAD" | jq .
+
+          # Save to a file if needed
+          echo "$JSON_PAYLOAD" > changed_files.json done
