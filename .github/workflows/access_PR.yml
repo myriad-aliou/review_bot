@@ -38,6 +38,4 @@ jobs:
           JSON_PAYLOAD+="]}"
           echo "JSON Payload:"
           echo "$JSON_PAYLOAD" | jq .
-
-          # Save to a file if needed
-          echo "$JSON_PAYLOAD" > changed_files.json done
+          done
