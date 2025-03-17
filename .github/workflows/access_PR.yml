@@ -39,7 +39,8 @@ jobs:
           echo "JSON Payload:"
           echo "$JSON_PAYLOAD" | jq .
 
-          echo "$JSON_PAYLOAD[0].content"
+          FILE_CONTENT=$(echo "$JSON_PAYLOAD" | jq -r '.files[0].content')
+          echo "$FILE_CONTENT"
 
 
       # - name: Send JSON to API
