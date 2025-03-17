@@ -19,3 +19,12 @@ jobs:
           CHANGED_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path')
           echo "Changed files:"
           echo "$CHANGED_FILES"
+
+          echo "Fetching content of changed files..."
+          for FILE in $CHANGED_FILES; do
+            echo "-----------------------"
+            echo "File: $FILE"
+            echo "Content:"
+            cat "$FILE" || echo "File not found (possibly deleted or renamed)"
+            echo "-----------------------"
+          done
