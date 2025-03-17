@@ -7,7 +7,7 @@ api = Api(
     title="Code Review Bot API",
     version="1.0",
     description="API pour l'analyse automatique de code Python",
-)
+)##Simple comment for test
 
 # Création d'un namespace pour les endpoints d'analyse
 ns = api.namespace('analyze', description='Endpoints pour l\'analyse de code')
