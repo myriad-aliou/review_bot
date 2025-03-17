@@ -42,7 +42,7 @@ jobs:
           # Save to a file if needed
           echo "$JSON_PAYLOAD" > changed_files.json done
 
-          CONTENTS=$(jq -r '.files[].content' changed_files.json)
+          CONTENTS=$(JSON_PAYLOAD.files[].content)
           echo "Extracted File Content:"
           echo "$CONTENTS"
 
