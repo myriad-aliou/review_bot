@@ -47,7 +47,7 @@ jobs:
           API_URL="https://01e0-41-83-7-60.ngrok-free.app/analyze/code"  # Replace with your API endpoint
           RESPONSE=$(curl -s -X POST "$API_URL" \
             -H "Content-Type: application/json" \
-            -d $JSON_PAYLOAD)
+            -d "$Json_payload")
 
           echo "API Response:"
           echo "$RESPONSE"
