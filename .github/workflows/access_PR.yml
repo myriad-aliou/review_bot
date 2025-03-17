@@ -38,4 +38,3 @@ jobs:
           JSON_PAYLOAD+="]}"
           echo "JSON Payload:"
           echo "$JSON_PAYLOAD" | jq .
-          done
