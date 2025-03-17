@@ -39,7 +39,7 @@ jobs:
           echo "JSON Payload:"
           echo "$JSON_PAYLOAD" | jq .
 
-          CONTENTS=$(jq -r '.files[].content' changed_files.json)
+          CONTENTS=$(jq -r '.files[].content' JSON_PAYLOAD)
           echo "Extracted File Content:"
           echo "$CONTENTS"
 
