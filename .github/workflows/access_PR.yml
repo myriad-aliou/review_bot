@@ -39,16 +39,15 @@ jobs:
           echo "JSON Payload:"
           echo "$JSON_PAYLOAD" | jq .
 
-          FILE_CONTENT=$(echo "$JSON_PAYLOAD" | jq -r '.files[0].content')
-          echo "$FILE_CONTENT"
+          # Save to a file if needed
+          echo "$JSON_PAYLOAD" > changed_files.json done
 
+      - name: Send JSON to API
+        run: |
+          API_URL="https://01e0-41-83-7-60.ngrok-free.app/analyze/code"  # Replace with your API endpoint
+          RESPONSE=$(curl -s -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -d $JSON_PAYLOAD)
 
-      # - name: Send JSON to API
-      #   run: |
-      #     API_URL="https://01e0-41-83-7-60.ngrok-free.app/analyze/code"  # Replace with your API endpoint
-      #     RESPONSE=$(curl -s -X POST "$API_URL" \
-      #       -H "Content-Type: application/json" \
-      #       -d $Json_payload)
-
-      #     echo "API Response:"
-      #     echo "$RESPONSE"
+          echo "API Response:"
+          echo "$RESPONSE"
