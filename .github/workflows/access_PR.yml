@@ -51,14 +51,8 @@ jobs:
             fi
           done
 
-      - name: Add comment to PR
-        uses: actions/github-script@v7
+      - name: Comment PR
+        uses: thollander/actions-comment-pull-request@v1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            github.rest.createComment({
-              owner: context.repo.owner,
-              issue_number: context.issue.number,
-              repo: context.repo.repo,
-              body: process.env.variable_example
-            })
+          message: 'Thank you for your pull request!'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
