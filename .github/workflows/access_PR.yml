@@ -37,7 +37,8 @@ jobs:
 
           JSON_PAYLOAD+="]}"
           echo "JSON Payload:"
-          echo "$JSON_PAYLOAD" | jq .
+          #echo "$JSON_PAYLOAD" | jq .
+          echo "$JSON_PAYLOAD["files"][0]["content"]"
 
       - name: Send JSON to API
         run: |
