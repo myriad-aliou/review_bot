@@ -1,55 +1,52 @@
 name: PR File Changes
-
 on:
   pull_request:
     types: [opened, synchronize]
-
 jobs:
   changed-files:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+        with:
+          fetch-depth: 0  # Fetch all history to ensure we can access the changed files
+      
       - name: Get changed files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           CHANGED_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path')
           echo "Changed files: $CHANGED_FILES"
-
-          echo "Formatting files as JSON..."
-          JSON_PAYLOAD="{\"files\": ["
-          FIRST=true
-
+          echo "CHANGED_FILES<<EOF" >> $GITHUB_ENV
+          echo "$CHANGED_FILES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+      
+      - name: Send JSON to API
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          API_URL="https://01e0-41-83-7-60.ngrok-free.app/analyze/code"
+          
+          # Process each file individually
           for FILE in $CHANGED_FILES; do
             if [ -f "$FILE" ]; then
-              CONTENT=$(jq -Rs . < "$FILE")  # Convert file content to JSON string
-              if [ "$FIRST" = true ]; then
-                FIRST=false
-              else
-                JSON_PAYLOAD+=","
-              fi
-              JSON_PAYLOAD+="{\"filename\": \"$FILE\", \"content\": $CONTENT}"
+              echo "Processing file: $FILE"
+              
+              # Get file content and escape properly for JSON
+              FILE_CONTENT=$(cat "$FILE" | jq -Rs .)
+              
+              # Create JSON payload for this file
+              JSON_PAYLOAD="{\"code\": $FILE_CONTENT, \"filename\": \"$FILE\"}"
+              
+              echo "Sending request for $FILE..."
+              
+              # Send to API and capture response
+              RESPONSE=$(curl -s -X POST "$API_URL" \
+                -H "Content-Type: application/json" \
+                -d "$JSON_PAYLOAD")
+              
+              echo "API Response for $FILE:"
+              echo "$RESPONSE"
+              echo "-----------------------------------"
             fi
           done
-
-          JSON_PAYLOAD+="]}"
-          echo "JSON Payload:"
-          echo "$JSON_PAYLOAD" | jq .
-
-      - name: Send JSON to API
-        run: |
-          API_URL="https://01e0-41-83-7-60.ngrok-free.app/analyze/code"  # Replace with your API endpoint
-          RESPONSE=$(curl -s -X POST "$API_URL" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "code": "string",
-              "filename": "temp.py"
-            }')
-
-          echo "API Response:"
-          echo "$RESPONSE"
-
-      
