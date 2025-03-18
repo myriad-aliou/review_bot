@@ -39,28 +39,17 @@ jobs:
           echo "JSON Payload:"
           echo "$JSON_PAYLOAD" | jq .
 
-      # - name: Send JSON to API
-      #   run: |
-      #     API_URL="https://01e0-41-83-7-60.ngrok-free.app/analyze/code"  # Replace with your API endpoint
-      #     RESPONSE=$(curl -s -X POST "$API_URL" \
-      #       -H "Content-Type: application/json" \
-      #       -d '{
-      #         "code": "string",
-      #         "filename": "temp.py"
-      #       }')
-
-      #     echo "API Response:"
-      #     echo "$RESPONSE"
-
-      - name: Create Comment
-        if: steps.pr-changes.outputs.changes != '[]'
+      - name: Send JSON to API
         run: |
-          # Use GitHub API to create a comment on the PR
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          COMMENT="Your checklist comment here"
-          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
-          COMMENT_URL="https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
+          API_URL="https://01e0-41-83-7-60.ngrok-free.app/analyze/code"  # Replace with your API endpoint
+          RESPONSE=$(curl -s -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "code": "string",
+              "filename": "temp.py"
+            }')
 
-          curl -s -H "Authorization: token ${GITHUB_TOKEN}" -X POST $COMMENT_URL -d "{\"body\":\"$COMMENT\"}"
+          echo "API Response:"
+          echo "$RESPONSE"
 
       
