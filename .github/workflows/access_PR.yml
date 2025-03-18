@@ -25,7 +25,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          API_URL="https://01e0-41-83-7-60.ngrok-free.app/analyze/code"
+          API_URL="https://60dc-41-83-7-60.ngrok-free.app/analyze/code"
           
           # Process each file individually
           for FILE in $CHANGED_FILES; do
