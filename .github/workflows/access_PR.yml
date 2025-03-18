@@ -5,7 +5,7 @@ on:
 
 
 permissions:
-  pull-requests: read
+  pull-requests: write
 
 
 jobs:
@@ -59,7 +59,7 @@ jobs:
             fi
           done
 
-          
+
       - name: Comment PR
         uses: thollander/actions-comment-pull-request@v1
         with:
