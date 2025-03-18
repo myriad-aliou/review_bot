@@ -2,6 +2,12 @@ name: PR File Changes
 on:
   pull_request:
     types: [opened, synchronize]
+
+
+permissions:
+  pull-requests: read
+
+
 jobs:
   changed-files:
     runs-on: ubuntu-latest
@@ -11,6 +17,7 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all history to ensure we can access the changed files
       
+
       - name: Get changed files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -21,6 +28,7 @@ jobs:
           echo "$CHANGED_FILES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
       
+
       - name: Send JSON to API
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -51,6 +59,7 @@ jobs:
             fi
           done
 
+          
       - name: Comment PR
         uses: thollander/actions-comment-pull-request@v1
         with:
