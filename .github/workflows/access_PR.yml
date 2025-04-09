@@ -25,13 +25,12 @@ jobs:
           echo "$CHANGED_FILES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
       
-      - name: Analyze files and prepare comments
-        id: analyze
+      - name: Analyze files and post line comments
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          API_URL="https://b73f-154-125-8-19.ngrok-free.app/analyze/code"
-          COMMENTS=""
+          API_URL="https://60dc-41-83-7-60.ngrok-free.app/analyze/code"
+          PR_NUMBER=${{ github.event.pull_request.number }}
           
           # Process each file individually
           for FILE in $CHANGED_FILES; do
@@ -51,27 +50,39 @@ jobs:
               echo "API Response for $FILE:"
               echo "$RESPONSE"
               
-              # Format the response into a comment
-              FORMATTED_COMMENT=$(echo -e "## Analysis for \`$FILE\`\n\n$(echo "$RESPONSE" | jq -r '.message // . | if type == "object" then . | tostring else . end')\n\n---\n")
-              COMMENTS="${COMMENTS}${FORMATTED_COMMENT}"
+              # Extract the message from the API response (assuming it's in a 'message' field)
+              # Modify the jq extraction based on your actual API response structure
+              ANALYSIS_MESSAGE=$(echo "$RESPONSE" | jq -r '.message // .feedback // .analysis // .')
+              
+              # If the response is still a JSON object, try to extract a string representation
+              if [[ $ANALYSIS_MESSAGE == {* ]]; then
+                ANALYSIS_MESSAGE=$(echo "$ANALYSIS_MESSAGE" | jq -r 'if type == "object" then . | tostring else . end')
+              fi
+              
+              # Get the first line number of the file in the PR
+              # This is a simplification - ideally you'd determine the most relevant line for each comment
+              LINE_NUMBER=$(gh pr view $PR_NUMBER --json files --jq ".files[] | select(.path == \"$FILE\") | .additions_count" || echo "1")
+              if [ -z "$LINE_NUMBER" ] || [ "$LINE_NUMBER" == "null" ]; then
+                LINE_NUMBER=1
+              fi
+              
+              echo "Adding review comment on $FILE at line $LINE_NUMBER"
+              
+              # Post the comment on the specific file and line
+              gh pr review $PR_NUMBER --comment --body "$ANALYSIS_MESSAGE" --file "$FILE" --line "$LINE_NUMBER"
               
               echo "-----------------------------------"
             fi
           done
           
-          # Save all comments to output
-          echo "ANALYSIS_COMMENTS<<EOF" >> $GITHUB_ENV
-          echo "$COMMENTS" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-      
-      - name: Comment on PR with analysis results
+      - name: Add summary comment
         uses: thollander/actions-comment-pull-request@v2
         with:
           message: |
-            # Code Analysis Results
+            # Code Analysis Complete
             
-            ${{ env.ANALYSIS_COMMENTS }}
+            I've added inline comments to the changed files with analysis results.
             
             *Automated analysis performed on changed files*
-          comment_tag: code-analysis-results
+          comment_tag: code-analysis-summary
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
