@@ -1,23 +1,21 @@
-name: PR File Changes
-
+name: PR File Analysis
 on:
   pull_request:
     types: [opened, synchronize]
-
 permissions:
   pull-requests: write
-
+  contents: read
 jobs:
-  changed-files:
+  analyze-changes:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
+          fetch-depth: 0 # Fetch all history to ensure we can access the changed files
+      
       - name: Get changed files
+        id: changed-files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -26,31 +24,54 @@ jobs:
           echo "CHANGED_FILES<<EOF" >> $GITHUB_ENV
           echo "$CHANGED_FILES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
-
-      - name: Analyze and comment per file
+      
+      - name: Analyze files and prepare comments
+        id: analyze
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          API_URL="https://1bf6-41-82-199-251.ngrok-free.app/analyze/code"
-
+          API_URL="https://b73f-154-125-8-19.ngrok-free.app/analyze/code"
+          COMMENTS=""
+          
+          # Process each file individually
           for FILE in $CHANGED_FILES; do
             if [ -f "$FILE" ]; then
               echo "Processing file: $FILE"
-
+              # Get file content and escape properly for JSON
               FILE_CONTENT=$(cat "$FILE" | jq -Rs .)
+              # Create JSON payload for this file
               JSON_PAYLOAD="{\"code\": $FILE_CONTENT, \"filename\": \"$FILE\"}"
-
-              echo "Sending request to analyzer for $FILE..."
+              echo "Sending request for $FILE..."
+              
+              # Send to API and capture response
               RESPONSE=$(curl -s -X POST "$API_URL" \
                 -H "Content-Type: application/json" \
                 -d "$JSON_PAYLOAD")
-
-              echo "Analyzer Response for $FILE:"
+                
+              echo "API Response for $FILE:"
               echo "$RESPONSE"
-
-              COMMENT_BODY="### Code Review for \`$FILE\`\n\n\`\`\`json\n$RESPONSE\n\`\`\`"
-
-              # Post comment directly using GitHub CLI
-              gh pr comment ${{ github.event.pull_request.number }} --body "$COMMENT_BODY"
+              
+              # Format the response into a comment
+              FORMATTED_COMMENT=$(echo -e "## Analysis for \`$FILE\`\n\n$(echo "$RESPONSE" | jq -r '.message // . | if type == "object" then . | tostring else . end')\n\n---\n")
+              COMMENTS="${COMMENTS}${FORMATTED_COMMENT}"
+              
+              echo "-----------------------------------"
             fi
           done
+          
+          # Save all comments to output
+          echo "ANALYSIS_COMMENTS<<EOF" >> $GITHUB_ENV
+          echo "$COMMENTS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+      
+      - name: Comment on PR with analysis results
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          message: |
+            # Code Analysis Results
+            
+            ${{ env.ANALYSIS_COMMENTS }}
+            
+            *Automated analysis performed on changed files*
+          comment_tag: code-analysis-results
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
