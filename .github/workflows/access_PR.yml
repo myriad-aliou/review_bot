@@ -25,12 +25,16 @@ jobs:
           echo "$CHANGED_FILES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
       
-      - name: Analyze files and post line comments
+      - name: Analyze files and post review comments
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           API_URL="https://b73f-154-125-8-19.ngrok-free.app/analyze/code"
           PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO="${GITHUB_REPOSITORY}"
+          COMMIT_ID=$(gh pr view $PR_NUMBER --json commits --jq '.commits[-1].oid')
+          
+          echo "Latest commit ID: $COMMIT_ID"
           
           # Process each file individually
           for FILE in $CHANGED_FILES; do
@@ -50,38 +54,55 @@ jobs:
               echo "API Response for $FILE:"
               echo "$RESPONSE"
               
-              # Extract the message from the API response (assuming it's in a 'message' field)
-              # Modify the jq extraction based on your actual API response structure
-              ANALYSIS_MESSAGE=$(echo "$RESPONSE" | jq -r '.message // .feedback // .analysis // .')
+              # Parse issues from the response
+              ISSUES=$(echo "$RESPONSE" | jq -r '.issues // []')
               
-              # If the response is still a JSON object, try to extract a string representation
-              if [[ $ANALYSIS_MESSAGE == {* ]]; then
-                ANALYSIS_MESSAGE=$(echo "$ANALYSIS_MESSAGE" | jq -r 'if type == "object" then . | tostring else . end')
+              # If there are issues, create comments for each
+              if [[ "$ISSUES" != "[]" && "$ISSUES" != "null" ]]; then
+                # Count issues
+                ISSUE_COUNT=$(echo "$ISSUES" | jq 'length')
+                echo "Found $ISSUE_COUNT issues for $FILE"
+                
+                # Create a review comment for each issue
+                for (( i=0; i<$ISSUE_COUNT; i++ )); do
+                  LINE=$(echo "$ISSUES" | jq -r ".[$i].line")
+                  MESSAGE=$(echo "$ISSUES" | jq -r ".[$i].message")
+                  TYPE=$(echo "$ISSUES" | jq -r ".[$i].type")
+                  SOURCE=$(echo "$ISSUES" | jq -r ".[$i].source")
+                  
+                  # Create the review comment using the GitHub REST API
+                  COMMENT_BODY="**$TYPE** from $SOURCE: $MESSAGE"
+                  
+                  echo "Adding comment at $FILE:$LINE - $COMMENT_BODY"
+                  
+                  # Use GitHub REST API to post the review comment
+                  curl -s -X POST \
+                    -H "Authorization: token $GITHUB_TOKEN" \
+                    -H "Accept: application/vnd.github.v3+json" \
+                    "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments" \
+                    -d "{
+                      \"body\": \"$COMMENT_BODY\",
+                      \"commit_id\": \"$COMMIT_ID\",
+                      \"path\": \"$FILE\",
+                      \"line\": $LINE
+                    }"
+                done
+              else
+                # No issues detected, add a general comment
+                echo "No specific issues found for $FILE"
               fi
-              
-              # Get the first line number of the file in the PR
-              # This is a simplification - ideally you'd determine the most relevant line for each comment
-              LINE_NUMBER=$(gh pr view $PR_NUMBER --json files --jq ".files[] | select(.path == \"$FILE\") | .additions_count" || echo "1")
-              if [ -z "$LINE_NUMBER" ] || [ "$LINE_NUMBER" == "null" ]; then
-                LINE_NUMBER=1
-              fi
-              
-              echo "Adding review comment on $FILE at line $LINE_NUMBER"
-              
-              # Post the comment on the specific file and line
-              gh pr review $PR_NUMBER --comment --body "$ANALYSIS_MESSAGE" --file "$FILE" --line "$LINE_NUMBER"
               
               echo "-----------------------------------"
             fi
           done
           
-      - name: Add summary comment
+      - name: Add summary comment with overall analysis
         uses: thollander/actions-comment-pull-request@v2
         with:
           message: |
-            # Code Analysis Complete
+            # Code Analysis Summary
             
-            I've added inline comments to the changed files with analysis results.
+            Analysis completed for all changed files. See inline comments for details.
             
             *Automated analysis performed on changed files*
           comment_tag: code-analysis-summary
