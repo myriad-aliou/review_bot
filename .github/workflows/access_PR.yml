@@ -1,17 +1,21 @@
-name: PR File Changes
+name: PR File Analysis
 on:
   pull_request:
     types: [opened, synchronize]
+permissions:
+  pull-requests: write
+  contents: read
 jobs:
-  changed-files:
+  analyze-changes:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch all history to ensure we can access the changed files
+          fetch-depth: 0 # Fetch all history to ensure we can access the changed files
       
       - name: Get changed files
+        id: changed-files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -21,32 +25,85 @@ jobs:
           echo "$CHANGED_FILES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
       
-      - name: Send JSON to API
+      - name: Analyze files and post review comments
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          API_URL="https://60dc-41-83-7-60.ngrok-free.app/analyze/code"
+          API_URL="https://3c67-41-82-199-251.ngrok-free.app/analyze/code"
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO="${GITHUB_REPOSITORY}"
+          COMMIT_ID=$(gh pr view $PR_NUMBER --json commits --jq '.commits[-1].oid')
+          
+          echo "Latest commit ID: $COMMIT_ID"
           
           # Process each file individually
           for FILE in $CHANGED_FILES; do
             if [ -f "$FILE" ]; then
               echo "Processing file: $FILE"
-              
               # Get file content and escape properly for JSON
               FILE_CONTENT=$(cat "$FILE" | jq -Rs .)
-              
               # Create JSON payload for this file
               JSON_PAYLOAD="{\"code\": $FILE_CONTENT, \"filename\": \"$FILE\"}"
-              
               echo "Sending request for $FILE..."
               
               # Send to API and capture response
               RESPONSE=$(curl -s -X POST "$API_URL" \
                 -H "Content-Type: application/json" \
                 -d "$JSON_PAYLOAD")
-              
+                
               echo "API Response for $FILE:"
               echo "$RESPONSE"
+              
+              # Parse issues from the response
+              ISSUES=$(echo "$RESPONSE" | jq -r '.issues // []')
+              
+              # If there are issues, create comments for each
+              if [[ "$ISSUES" != "[]" && "$ISSUES" != "null" ]]; then
+                # Count issues
+                ISSUE_COUNT=$(echo "$ISSUES" | jq 'length')
+                echo "Found $ISSUE_COUNT issues for $FILE"
+                
+                # Create a review comment for each issue
+                for (( i=0; i<$ISSUE_COUNT; i++ )); do
+                  LINE=$(echo "$ISSUES" | jq -r ".[$i].line")
+                  MESSAGE=$(echo "$ISSUES" | jq -r ".[$i].message")
+                  TYPE=$(echo "$ISSUES" | jq -r ".[$i].type")
+                  SOURCE=$(echo "$ISSUES" | jq -r ".[$i].source")
+                  
+                  # Create the review comment using the GitHub REST API
+                  COMMENT_BODY="**$TYPE** from $SOURCE: $MESSAGE"
+                  
+                  echo "Adding comment at $FILE:$LINE - $COMMENT_BODY"
+                  
+                  # Use GitHub REST API to post the review comment
+                  curl -s -X POST \
+                    -H "Authorization: token $GITHUB_TOKEN" \
+                    -H "Accept: application/vnd.github.v3+json" \
+                    "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments" \
+                    -d "{
+                      \"body\": \"$COMMENT_BODY\",
+                      \"commit_id\": \"$COMMIT_ID\",
+                      \"path\": \"$FILE\",
+                      \"line\": $LINE
+                    }"
+                done
+              else
+                # No issues detected, add a general comment
+                echo "No specific issues found for $FILE"
+              fi
+              
               echo "-----------------------------------"
             fi
           done
+          
+      - name: Add summary comment with overall analysis
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          message: |
+            # Code Analysis Summary
+            
+            Analysis completed for all changed files. See inline comments for details.
+            
+            *Automated analysis performed on changed files*
+          comment_tag: code-analysis-summary
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

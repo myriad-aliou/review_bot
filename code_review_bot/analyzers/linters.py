@@ -31,9 +31,10 @@ def analyze_code(code, filename="temp.py"):
         flake8_issues = run_flake8(temp_path)
         pylint_issues = run_pylint(temp_path)
         bandit_issues = run_bandit(temp_path)
+        #pip_audit_issues = run_pip_audit()
         
         # Combiner tous les problèmes
-        all_issues = flake8_issues + pylint_issues + bandit_issues
+        all_issues = flake8_issues + pylint_issues + bandit_issues #+ pip_audit_issues
         
         # Générer un résumé
         summary = generate_summary(all_issues)
@@ -161,6 +162,41 @@ def run_bandit(file_path):
             pass
     
     return issues
+
+# def run_pip_audit():
+#     """Exécute pip-audit pour détecter les vulnérabilités des dépendances"""
+#     result = subprocess.run(
+#         ["pip-audit", "--format", "json"],
+#         capture_output=True,
+#         text=True
+#     )
+#     issues = []
+    
+#     if result.stdout:
+#         try:
+#             pip_audit_output = json.loads(result.stdout)
+#             # Log the output to check the structure
+#             logger.info(f"pip-audit output: {pip_audit_output}")
+            
+#             for advisory in pip_audit_output:
+#                 # Ensure the advisory is a dictionary and contains expected fields
+#                 if isinstance(advisory, dict) and 'advisory' in advisory:
+#                     advisory_data = advisory['advisory']
+#                     issues.append({
+#                         "line": 0,  # pip-audit doesn't provide line numbers
+#                         "column": 0,  # pip-audit doesn't provide column information
+#                         "type": "security",
+#                         "message": f"Vulnerability found: {advisory_data['summary']} (Package: {advisory['package']}, Version: {advisory['version']})",
+#                         "source": "pip-audit"
+#                     })
+#                 else:
+#                     logger.warning(f"Unexpected structure in pip-audit output: {advisory}")
+#         except json.JSONDecodeError:
+#             # Fallback si la sortie JSON n'est pas valide
+#             logger.error("Failed to parse pip-audit JSON output.")
+    
+#     return issues
+
 
 def generate_summary(issues):
     """Génère un résumé des problèmes détectés"""
