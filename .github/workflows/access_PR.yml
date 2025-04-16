@@ -79,9 +79,6 @@ jobs:
                   # Create the review comment using the GitHub REST API
                   COMMENT_BODY="**$TYPE** from $SOURCE: $MESSAGE"
                   
-                  # Create a unique identifier for this issue
-                  ISSUE_ID="$FILE:$LINE:$MESSAGE"
-                  
                   # Check if this issue has already been commented on
                   IS_DUPLICATE=$(echo "$EXISTING_COMMENTS" | jq --arg body "$COMMENT_BODY" --arg path "$FILE" --arg line "$LINE" \
                     'map(select(.path == $path and .line == ($line|tonumber) and .body == $body)) | length')
@@ -112,22 +109,41 @@ jobs:
               echo "-----------------------------------"
             fi
           done
+      
+      - name: Add summary comment with overall analysis
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          message: |
+            # Code Analysis Summary
+            
+            Analysis completed for all changed files. See inline comments for details.
+            
+            *Automated analysis performed on changed files*
+          comment_tag: code-analysis-summary
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
-      - name: Clean old review comments for fixed issues
+      - name: Check for outdated comments (separate step)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -e # Make script exit on any error
+          
           PR_NUMBER=${{ github.event.pull_request.number }}
           REPO="${GITHUB_REPOSITORY}"
+          API_URL="https://bd10-154-125-8-19.ngrok-free.app/analyze/code"
           
           echo "Checking for resolved issues..."
           
           # Get all existing review comments
-          COMMENTS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments")
+          echo "Fetching all PR comments..."
+          COMMENTS=$(gh api repos/$REPO/pulls/$PR_NUMBER/comments --paginate)
+          if [ $? -ne 0 ]; then
+            echo "Warning: Failed to fetch PR comments. Skipping cleanup."
+            exit 0
+          fi
           
           # Extract linter comments (those starting with **error, **warning, etc.)
+          echo "Filtering linter comments..."
           LINTER_COMMENTS=$(echo "$COMMENTS" | jq '[.[] | select(.body | test("^\\*\\*[a-z]+\\*\\* from [a-z]+:"))]')
           
           # Get comment count
@@ -141,48 +157,49 @@ jobs:
             COMMENT_LINE=$(echo "$LINTER_COMMENTS" | jq -r ".[$i].line")
             COMMENT_BODY=$(echo "$LINTER_COMMENTS" | jq -r ".[$i].body")
             
-            # Check if the file was analyzed in this run
-            if [[ "$CHANGED_FILES" == *"$COMMENT_PATH"* ]]; then
+            echo "Checking comment ID $COMMENT_ID at $COMMENT_PATH:$COMMENT_LINE"
+            
+            # Check if the file exists and was changed in this PR
+            if [[ -f "$COMMENT_PATH" ]]; then
+              echo "  File exists, re-analyzing..."
+              
               # Re-analyze the file to see if issue still exists
-              if [ -f "$COMMENT_PATH" ]; then
-                FILE_CONTENT=$(cat "$COMMENT_PATH" | jq -Rs .)
-                JSON_PAYLOAD="{\"code\": $FILE_CONTENT, \"filename\": \"$COMMENT_PATH\"}"
-                
-                API_RESPONSE=$(curl -s -X POST "$API_URL" \
-                  -H "Content-Type: application/json" \
-                  -d "$JSON_PAYLOAD")
-                
-                NEW_ISSUES=$(echo "$API_RESPONSE" | jq -r '.issues // []')
-                
-                # Extract message from comment body (after the source: part)
-                COMMENT_MESSAGE=$(echo "$COMMENT_BODY" | sed -E 's/^\*\*[^*]+\*\* from [^:]+: (.*)/\1/')
-                
-                # Check if this specific issue still exists at this line
-                ISSUE_STILL_EXISTS=$(echo "$NEW_ISSUES" | jq --arg line "$COMMENT_LINE" --arg msg "$COMMENT_MESSAGE" \
-                  'map(select(.line == ($line|tonumber) and .message | contains($msg))) | length')
-                
-                if [[ "$ISSUE_STILL_EXISTS" == "0" ]]; then
-                  echo "Issue fixed, removing comment $COMMENT_ID for $COMMENT_PATH:$COMMENT_LINE"
-                  # Delete the comment as the issue is fixed
-                  curl -s -X DELETE \
-                    -H "Authorization: token $GITHUB_TOKEN" \
-                    -H "Accept: application/vnd.github.v3+json" \
-                    "https://api.github.com/repos/$REPO/pulls/comments/$COMMENT_ID"
-                else
-                  echo "Issue still exists at $COMMENT_PATH:$COMMENT_LINE"
-                fi
+              FILE_CONTENT=$(cat "$COMMENT_PATH" | jq -Rs .)
+              JSON_PAYLOAD="{\"code\": $FILE_CONTENT, \"filename\": \"$COMMENT_PATH\"}"
+              
+              API_RESPONSE=$(curl -s -X POST "$API_URL" \
+                -H "Content-Type: application/json" \
+                -d "$JSON_PAYLOAD")
+              
+              if [ $? -ne 0 ] || [[ "$API_RESPONSE" == "" ]]; then 
+                echo "  Warning: Failed to get API response. Skipping this comment."
+                continue
               fi
+              
+              echo "  Got API response, checking if issue still exists..."
+              NEW_ISSUES=$(echo "$API_RESPONSE" | jq -r '.issues // []')
+              
+              # Extract message from comment body (after the source: part)
+              COMMENT_MESSAGE=$(echo "$COMMENT_BODY" | sed -E 's/^\*\*[^*]+\*\* from [^:]+: (.*)/\1/')
+              
+              # Check if this specific issue still exists at this line
+              ISSUE_STILL_EXISTS=$(echo "$NEW_ISSUES" | jq --arg line "$COMMENT_LINE" --arg msg "$COMMENT_MESSAGE" \
+                'map(select(.line == ($line|tonumber) and .message | contains($msg))) | length')
+              
+              if [[ "$ISSUE_STILL_EXISTS" == "0" ]]; then
+                echo "  Issue fixed, removing comment $COMMENT_ID"
+                # Delete the comment as the issue is fixed
+                gh api -X DELETE repos/$REPO/pulls/comments/$COMMENT_ID
+                if [ $? -ne 0 ]; then
+                  echo "  Warning: Failed to delete comment $COMMENT_ID. Continuing..."
+                fi
+              else
+                echo "  Issue still exists, keeping comment"
+              fi
+            else
+              echo "  File not found, skipping"
             fi
           done
           
-      - name: Add summary comment with overall analysis
-        uses: thollander/actions-comment-pull-request@v2
-        with:
-          message: |
-            # Code Analysis Summary
-            
-            Analysis completed for all changed files. See inline comments for details.
-            
-            *Automated analysis performed on changed files*
-          comment_tag: code-analysis-summary
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Always exit with success
+          exit 0
