@@ -29,7 +29,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          API_URL="https://e045-154-65-37-6.ngrok-free.app/analyze/code"
+          API_URL="https://bd10-154-125-8-19.ngrok-free.app/analyze/code"
           PR_NUMBER=${{ github.event.pull_request.number }}
           REPO="${GITHUB_REPOSITORY}"
           COMMIT_ID=$(gh pr view $PR_NUMBER --json commits --jq '.commits[-1].oid')
