@@ -36,6 +36,12 @@ jobs:
           
           echo "Latest commit ID: $COMMIT_ID"
           
+          # Get existing PR comments to avoid duplication
+          echo "Fetching existing comments..."
+          EXISTING_COMMENTS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments")
+          
           # Process each file individually
           for FILE in $CHANGED_FILES; do
             if [ -f "$FILE" ]; then
@@ -73,26 +79,99 @@ jobs:
                   # Create the review comment using the GitHub REST API
                   COMMENT_BODY="**$TYPE** from $SOURCE: $MESSAGE"
                   
-                  echo "Adding comment at $FILE:$LINE - $COMMENT_BODY"
+                  # Create a unique identifier for this issue
+                  ISSUE_ID="$FILE:$LINE:$MESSAGE"
                   
-                  # Use GitHub REST API to post the review comment
-                  curl -s -X POST \
-                    -H "Authorization: token $GITHUB_TOKEN" \
-                    -H "Accept: application/vnd.github.v3+json" \
-                    "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments" \
-                    -d "{
-                      \"body\": \"$COMMENT_BODY\",
-                      \"commit_id\": \"$COMMIT_ID\",
-                      \"path\": \"$FILE\",
-                      \"line\": $LINE
-                    }"
+                  # Check if this issue has already been commented on
+                  IS_DUPLICATE=$(echo "$EXISTING_COMMENTS" | jq --arg body "$COMMENT_BODY" --arg path "$FILE" --arg line "$LINE" \
+                    'map(select(.path == $path and .line == ($line|tonumber) and .body == $body)) | length')
+                  
+                  if [[ "$IS_DUPLICATE" == "0" ]]; then
+                    echo "Adding new comment at $FILE:$LINE - $COMMENT_BODY"
+                    
+                    # Use GitHub REST API to post the review comment
+                    curl -s -X POST \
+                      -H "Authorization: token $GITHUB_TOKEN" \
+                      -H "Accept: application/vnd.github.v3+json" \
+                      "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments" \
+                      -d "{
+                        \"body\": \"$COMMENT_BODY\",
+                        \"commit_id\": \"$COMMIT_ID\",
+                        \"path\": \"$FILE\",
+                        \"line\": $LINE
+                      }"
+                  else
+                    echo "Skipping duplicate comment at $FILE:$LINE - already exists"
+                  fi
                 done
               else
-                # No issues detected, add a general comment
+                # No issues detected
                 echo "No specific issues found for $FILE"
               fi
               
               echo "-----------------------------------"
+            fi
+          done
+          
+      - name: Clean old review comments for fixed issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO="${GITHUB_REPOSITORY}"
+          
+          echo "Checking for resolved issues..."
+          
+          # Get all existing review comments
+          COMMENTS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments")
+          
+          # Extract linter comments (those starting with **error, **warning, etc.)
+          LINTER_COMMENTS=$(echo "$COMMENTS" | jq '[.[] | select(.body | test("^\\*\\*[a-z]+\\*\\* from [a-z]+:"))]')
+          
+          # Get comment count
+          COMMENT_COUNT=$(echo "$LINTER_COMMENTS" | jq 'length')
+          echo "Found $COMMENT_COUNT linter comments"
+          
+          # For each linter comment, check if the issue still exists
+          for (( i=0; i<$COMMENT_COUNT; i++ )); do
+            COMMENT_ID=$(echo "$LINTER_COMMENTS" | jq -r ".[$i].id")
+            COMMENT_PATH=$(echo "$LINTER_COMMENTS" | jq -r ".[$i].path")
+            COMMENT_LINE=$(echo "$LINTER_COMMENTS" | jq -r ".[$i].line")
+            COMMENT_BODY=$(echo "$LINTER_COMMENTS" | jq -r ".[$i].body")
+            
+            # Check if the file was analyzed in this run
+            if [[ "$CHANGED_FILES" == *"$COMMENT_PATH"* ]]; then
+              # Re-analyze the file to see if issue still exists
+              if [ -f "$COMMENT_PATH" ]; then
+                FILE_CONTENT=$(cat "$COMMENT_PATH" | jq -Rs .)
+                JSON_PAYLOAD="{\"code\": $FILE_CONTENT, \"filename\": \"$COMMENT_PATH\"}"
+                
+                API_RESPONSE=$(curl -s -X POST "$API_URL" \
+                  -H "Content-Type: application/json" \
+                  -d "$JSON_PAYLOAD")
+                
+                NEW_ISSUES=$(echo "$API_RESPONSE" | jq -r '.issues // []')
+                
+                # Extract message from comment body (after the source: part)
+                COMMENT_MESSAGE=$(echo "$COMMENT_BODY" | sed -E 's/^\*\*[^*]+\*\* from [^:]+: (.*)/\1/')
+                
+                # Check if this specific issue still exists at this line
+                ISSUE_STILL_EXISTS=$(echo "$NEW_ISSUES" | jq --arg line "$COMMENT_LINE" --arg msg "$COMMENT_MESSAGE" \
+                  'map(select(.line == ($line|tonumber) and .message | contains($msg))) | length')
+                
+                if [[ "$ISSUE_STILL_EXISTS" == "0" ]]; then
+                  echo "Issue fixed, removing comment $COMMENT_ID for $COMMENT_PATH:$COMMENT_LINE"
+                  # Delete the comment as the issue is fixed
+                  curl -s -X DELETE \
+                    -H "Authorization: token $GITHUB_TOKEN" \
+                    -H "Accept: application/vnd.github.v3+json" \
+                    "https://api.github.com/repos/$REPO/pulls/comments/$COMMENT_ID"
+                else
+                  echo "Issue still exists at $COMMENT_PATH:$COMMENT_LINE"
+                fi
+              fi
             fi
           done
           
