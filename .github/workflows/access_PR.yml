@@ -14,16 +14,41 @@ jobs:
         with:
           fetch-depth: 0 # Fetch all history to ensure we can access the changed files
       
-      - name: Get changed files
+      - name: Get changed files since last analysis
         id: changed-files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          CHANGED_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path')
-          echo "Changed files: $CHANGED_FILES"
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          
+          # Get the current commit SHA
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+          echo "Current commit: $CURRENT_COMMIT"
+          
+          # Try to get previously analyzed commit from PR comments
+          PREV_ANALYZED_COMMIT=$(gh pr view $PR_NUMBER --json comments --jq '.comments[] | select(.body | contains("Analyzed up to commit:")) | .body' | grep -o 'Analyzed up to commit: [0-9a-f]\+' | tail -1 | awk '{print $4}')
+          
+          if [ -z "$PREV_ANALYZED_COMMIT" ]; then
+            # First analysis in this PR - get base commit (start of PR)
+            echo "No previous analysis found - analyzing all files from PR base"
+            BASE_COMMIT=$(git merge-base $CURRENT_COMMIT origin/${{ github.base_ref }})
+            CHANGED_FILES=$(git diff --name-only $BASE_COMMIT $CURRENT_COMMIT)
+          else
+            # Get only files changed since the last analyzed commit
+            echo "Found previous analysis at commit: $PREV_ANALYZED_COMMIT"
+            CHANGED_FILES=$(git diff --name-only $PREV_ANALYZED_COMMIT $CURRENT_COMMIT)
+          fi
+          
+          # Output changed files for debugging
+          echo "Files changed since last analysis:"
+          echo "$CHANGED_FILES"
+          
           echo "CHANGED_FILES<<EOF" >> $GITHUB_ENV
           echo "$CHANGED_FILES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
+          
+          # Store current commit for reference in later steps
+          echo "CURRENT_COMMIT=$CURRENT_COMMIT" >> $GITHUB_ENV
       
       - name: Analyze files and post review comments
         env:
@@ -32,9 +57,15 @@ jobs:
           API_URL="https://d3f6-41-82-199-251.ngrok-free.app/analyze/code"
           PR_NUMBER=${{ github.event.pull_request.number }}
           REPO="${GITHUB_REPOSITORY}"
-          COMMIT_ID=$(gh pr view $PR_NUMBER --json commits --jq '.commits[-1].oid')
+          COMMIT_ID=${{ env.CURRENT_COMMIT }}
           
-          echo "Latest commit ID: $COMMIT_ID"
+          echo "Using commit ID for comments: $COMMIT_ID"
+          
+          # Check if there are any files to analyze
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No new or modified files to analyze"
+            exit 0
+          fi
           
           # Process each file individually
           for FILE in $CHANGED_FILES; do
@@ -96,13 +127,15 @@ jobs:
             fi
           done
           
-      - name: Add summary comment with overall analysis
+      - name: Add summary comment with tracking information
         uses: thollander/actions-comment-pull-request@v2
         with:
           message: |
             # Code Analysis Summary
             
-            Analysis completed for all changed files. See inline comments for details.
+            Analysis completed for recently changed files. See inline comments for details.
+            
+            Analyzed up to commit: ${{ env.CURRENT_COMMIT }}
             
             *Automated analysis performed on changed files*
           comment_tag: code-analysis-summary
