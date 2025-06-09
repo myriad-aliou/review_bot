@@ -1,77 +1,189 @@
-name: Access PR Code and Analyze
-
+name: PR File Analysis
 on:
   pull_request:
-    types: [opened, edited, synchronize]
+    types: [opened, synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
 
 jobs:
-  analyze_code:
+  analyze-changes:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          fetch-depth: 0
 
-      - name: Install dependencies
+      - name: Get changed files
+        id: changed-files
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # Utiliser git diff pour obtenir les fichiers modifiés
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Stocker les fichiers dans GITHUB_OUTPUT pour les étapes suivantes
+          {
+            echo "files<<EOF"
+            echo "$CHANGED_FILES"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
-      - name: Get PR number
-        id: get_pr
-        run: echo "PR_NUMBER=$(echo ${{ github.event.pull_request.number }})" >> $GITHUB_ENV
-
-      - name: Get latest commit ID
-        id: get_commit
-        run: echo "LATEST_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
-
-      - name: Get diff files
-        id: diff_files
-        run: |
-          echo "DIFF_FILES=$(git diff --name-only origin/${{ github.base_ref }}...origin/${{ github.head_ref }} | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_ENV
-
-      - name: Print debug info
-        run: |
-          echo "PR number: $PR_NUMBER"
-          echo "Latest commit ID: $LATEST_COMMIT"
-          echo "Diff files: $DIFF_FILES"
-
-      - name: Analyze each changed file
-        run: |
-          IFS=',' read -ra FILES <<< "$DIFF_FILES"
-          for file in "${FILES[@]}"; do
-            echo "Processing file: $file"
-            response=$(curl -s -X POST "$API_URL" -H "Content-Type: application/json" \
-              -d "{\"file_path\": \"$file\", \"commit_id\": \"$LATEST_COMMIT\"}")
-            echo "API Response for $file: $response"
-
-            count=$(echo "$response" | jq '.issues | length')
-            if [ "$count" -gt 0 ]; then
-              for ((i=0; i<count; i++)); do
-                line=$(echo "$response" | jq ".issues[$i].line")
-                column=$(echo "$response" | jq ".issues[$i].column")
-                message=$(echo "$response" | jq -r ".issues[$i].message")
-                type=$(echo "$response" | jq -r ".issues[$i].type")
-
-                # Format message for global comment if line not in diff
-                if ! grep -q "$file:$line" <<< "$DIFF_FILES"; then
-                  body="In **$file:$line** — **$type** from bot: $message"
-                  curl -s -X POST \
-                    -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-                    -H "Accept: application/vnd.github.v3+json" \
-                    https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
-                    -d "{\"body\": \"$body\"}"
-                fi
-              done
-            fi
-          done
+      - name: Analyze files and post review comments
         env:
-          API_URL: "https://3899-154-124-39-72.ngrok-free.app/analyze/code"
-          PR_NUMBER: ${{ env.PR_NUMBER }}
-          LATEST_COMMIT: ${{ env.LATEST_COMMIT }}
-          DIFF_FILES: ${{ env.DIFF_FILES }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          API_URL="https://3899-154-124-39-72.ngrok-free.app/analyze/code"
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO="${GITHUB_REPOSITORY}"
+          COMMIT_ID="${{ github.event.pull_request.head.sha }}"
+          
+          echo "Processing PR #$PR_NUMBER"
+          echo "Latest commit ID: $COMMIT_ID"
+          echo "Repository: $REPO"
+          
+          # Lire les fichiers modifiés depuis l'output de l'étape précédente
+          CHANGED_FILES="${{ steps.changed-files.outputs.files }}"
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No files changed in this PR"
+            exit 0
+          fi
+          
+          # Traiter chaque fichier individuellement
+          echo "$CHANGED_FILES" | while IFS= read -r FILE; do
+            # Ignorer les lignes vides
+            if [ -z "$FILE" ]; then
+              continue
+            fi
+            
+            # Vérifier que le fichier existe et n'est pas un répertoire
+            if [ ! -f "$FILE" ]; then
+              echo "Skipping $FILE (not a regular file or doesn't exist)"
+              continue
+            fi
+            
+            echo "Processing file: $FILE"
+            
+            # Obtenir le contenu du fichier et l'échapper pour JSON
+            if ! FILE_CONTENT=$(jq -Rs . < "$FILE" 2>/dev/null); then
+              echo "Error: Could not read or process file $FILE"
+              continue
+            fi
+            
+            # Créer le payload JSON
+            JSON_PAYLOAD=$(jq -n \
+              --argjson code "$FILE_CONTENT" \
+              --arg filename "$FILE" \
+              '{code: $code, filename: $filename}')
+            
+            echo "Sending analysis request for $FILE..."
+            
+            # Envoyer la requête à l'API avec gestion d'erreur
+            if RESPONSE=$(curl -s -w "%{http_code}" -X POST "$API_URL" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              --connect-timeout 30 \
+              --max-time 60 \
+              -d "$JSON_PAYLOAD"); then
+              
+              # Séparer le code de statut HTTP du corps de la réponse
+              HTTP_CODE="${RESPONSE: -3}"
+              RESPONSE_BODY="${RESPONSE%???}"
+              
+              echo "HTTP Status: $HTTP_CODE"
+              
+              if [ "$HTTP_CODE" -eq 200 ]; then
+                echo "API Response for $FILE:"
+                echo "$RESPONSE_BODY"
+                
+                # Parser les issues depuis la réponse
+                if ISSUES=$(echo "$RESPONSE_BODY" | jq -r '.issues // [] | if type == "array" then . else [] end' 2>/dev/null); then
+                  
+                  # Vérifier s'il y a des issues
+                  ISSUE_COUNT=$(echo "$ISSUES" | jq 'length' 2>/dev/null || echo "0")
+                  
+                  if [ "$ISSUE_COUNT" -gt 0 ]; then
+                    echo "Found $ISSUE_COUNT issues for $FILE"
+                    
+                    # Créer un commentaire de revue pour chaque issue
+                    echo "$ISSUES" | jq -r '.[] | @base64' | while IFS= read -r ISSUE_B64; do
+                      if [ -n "$ISSUE_B64" ]; then
+                        ISSUE_JSON=$(echo "$ISSUE_B64" | base64 -d)
+                        
+                        LINE=$(echo "$ISSUE_JSON" | jq -r '.line // 1')
+                        MESSAGE=$(echo "$ISSUE_JSON" | jq -r '.message // "Unknown issue"')
+                        TYPE=$(echo "$ISSUE_JSON" | jq -r '.type // "info"')
+                        SOURCE=$(echo "$ISSUE_JSON" | jq -r '.source // "analyzer"')
+                        
+                        # Validation des données
+                        if [ "$LINE" -le 0 ]; then
+                          LINE=1
+                        fi
+                        
+                        # Créer le corps du commentaire
+                        COMMENT_BODY="**${TYPE^^}** from $SOURCE: $MESSAGE"
+                        
+                        echo "Adding comment at $FILE:$LINE"
+                        
+                        # Poster le commentaire de revue via l'API GitHub
+                        COMMENT_RESPONSE=$(curl -s -w "%{http_code}" -X POST \
+                          -H "Authorization: token $GITHUB_TOKEN" \
+                          -H "Accept: application/vnd.github.v3+json" \
+                          -H "Content-Type: application/json" \
+                          "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments" \
+                          -d "$(jq -n \
+                            --arg body "$COMMENT_BODY" \
+                            --arg commit_id "$COMMIT_ID" \
+                            --arg path "$FILE" \
+                            --argjson line "$LINE" \
+                            '{body: $body, commit_id: $commit_id, path: $path, line: $line}')")
+                        
+                        COMMENT_HTTP_CODE="${COMMENT_RESPONSE: -3}"
+                        
+                        if [ "$COMMENT_HTTP_CODE" -eq 201 ]; then
+                          echo "✓ Comment posted successfully"
+                        else
+                          echo "✗ Failed to post comment (HTTP $COMMENT_HTTP_CODE)"
+                          echo "${COMMENT_RESPONSE%???}"
+                        fi
+                      fi
+                    done
+                  else
+                    echo "No issues found for $FILE"
+                  fi
+                else
+                  echo "Error: Could not parse issues from API response for $FILE"
+                fi
+              else
+                echo "Error: API request failed for $FILE (HTTP $HTTP_CODE)"
+                echo "$RESPONSE_BODY"
+              fi
+            else
+              echo "Error: Could not connect to API for $FILE"
+            fi
+            
+            echo "-----------------------------------"
+          done
+
+      - name: Add summary comment
+        if: always()
+        uses: thollander/actions-comment-pull-request@v2
+        with:
+          message: |
+            ## 🔍 Code Analysis Summary
+            
+            Automated code analysis has been completed for all changed files in this PR.
+            
+            - **Analysis Tools**: Static analysis, security scanning, and AI-powered code review
+            - **Files Processed**: Check the inline comments above for detailed findings
+            - **Status**: ${{ job.status }}
+            
+            > 💡 **Tip**: Review the inline comments for specific suggestions and improvements.
+            
+            ---
+            *This analysis was performed automatically on commit ${{ github.event.pull_request.head.sha }}*
+          comment_tag: code-analysis-summary
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
