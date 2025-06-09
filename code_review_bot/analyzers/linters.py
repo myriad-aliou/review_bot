@@ -197,15 +197,32 @@ File: {filename}
 Code with line numbers:
 {numbered_code}
 
-Please respond ONLY with a JSON array of issues in this exact format:
-[
-  {{
-    "line": <line_number>,
-    "type": "<error|warning|info|security|performance|style>",
-    "message": "<concise description of the issue>",
-    "severity": "<low|medium|high>"
-  }}
-]
+Please respond ONLY with a JSON array of issues in this exact format(like this):
+{
+  "issues": [
+    {
+      "line": 1,
+      "column": 1,
+      "type": "error",
+      "message": "F821: undefined name 'string'",
+      "source": "flake8"
+    },
+    {
+      "line": 1,
+      "column": 7,
+      "type": "warning",
+      "message": "W292: no newline at end of file",
+      "source": "flake8"
+    },
+    {
+      "line": 1,
+      "column": 0,
+      "type": "convention",
+      "message": "Final newline missing",
+      "source": "pylint"
+    }
+    ]
+}
 
 Focus on:
 - Security vulnerabilities
