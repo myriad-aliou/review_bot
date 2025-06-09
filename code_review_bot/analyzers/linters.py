@@ -231,7 +231,7 @@ Focus on:
 - Best practices violations
 - Potential bugs
 
-Return empty array [] if no issues found. Do not include explanatory text, only the JSON array."""
+Return { "issues": [] } if no issues found. Do not include explanatory text, only the JSON array."""
 
     for attempt in range(max_retries + 1):
         try:
