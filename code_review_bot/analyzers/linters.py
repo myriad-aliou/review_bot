@@ -396,7 +396,7 @@ def test_ollama_connection():
     """Test function to check Ollama connectivity"""
     config = get_config()
     ollama_config = config.get("ollama", {})
-    ollama_host = ollama_config.get("host", "http://rnoqi-154-124-39-72.a.free.pinggy.link")
+    ollama_host = ollama_config.get("host", "http://rnhws-154-124-39-72.a.free.pinggy.link")
     
     try:
         response = requests.get(f"{ollama_host}/api/tags", timeout=10)
