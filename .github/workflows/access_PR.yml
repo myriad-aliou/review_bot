@@ -1,119 +1,77 @@
-name: PR File Analysis
+name: Access PR Code and Analyze
 
 on:
   pull_request:
-    types: [opened, synchronize]
-
-permissions:
-  pull-requests: write
-  contents: read
+    types: [opened, edited, synchronize]
 
 jobs:
-  analyze-changes:
+  analyze_code:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
+          python-version: '3.11'
 
-      - name: Get changed files
-        id: changed-files
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install dependencies
         run: |
-          CHANGED_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path')
-          echo "Changed files: $CHANGED_FILES"
-          echo "CHANGED_FILES<<EOF" >> $GITHUB_ENV
-          echo "$CHANGED_FILES" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Analyze files and post review comments
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Get PR number
+        id: get_pr
+        run: echo "PR_NUMBER=$(echo ${{ github.event.pull_request.number }})" >> $GITHUB_ENV
+
+      - name: Get latest commit ID
+        id: get_commit
+        run: echo "LATEST_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      - name: Get diff files
+        id: diff_files
         run: |
-          API_URL="https://3899-154-124-39-72.ngrok-free.app/analyze/code"
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          REPO="${GITHUB_REPOSITORY}"
-          COMMIT_ID=$(gh pr view $PR_NUMBER --json commits --jq '.commits[-1].oid')
+          echo "DIFF_FILES=$(git diff --name-only origin/${{ github.base_ref }}...origin/${{ github.head_ref }} | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_ENV
 
-          echo "Latest commit ID: $COMMIT_ID"
+      - name: Print debug info
+        run: |
+          echo "PR number: $PR_NUMBER"
+          echo "Latest commit ID: $LATEST_COMMIT"
+          echo "Diff files: $DIFF_FILES"
 
-          is_line_in_diff() {
-            local file="$1"
-            local line="$2"
-            PATCH=$(gh pr view $PR_NUMBER --json files --jq ".files[] | select(.path == \"$file\") | .patch")
-            echo "$PATCH" | grep -E "@@ .* \+${line}(,|\s|@)" > /dev/null
-            return $?
-          }
+      - name: Analyze each changed file
+        run: |
+          IFS=',' read -ra FILES <<< "$DIFF_FILES"
+          for file in "${FILES[@]}"; do
+            echo "Processing file: $file"
+            response=$(curl -s -X POST "$API_URL" -H "Content-Type: application/json" \
+              -d "{\"file_path\": \"$file\", \"commit_id\": \"$LATEST_COMMIT\"}")
+            echo "API Response for $file: $response"
 
-          for FILE in $CHANGED_FILES; do
-            if [ -f "$FILE" ]; then
-              echo "Processing file: $FILE"
-              FILE_CONTENT=$(cat "$FILE" | jq -Rs .)
-              JSON_PAYLOAD="{\"code\": $FILE_CONTENT, \"filename\": \"$FILE\"}"
-              echo "Sending request for $FILE..."
+            count=$(echo "$response" | jq '.issues | length')
+            if [ "$count" -gt 0 ]; then
+              for ((i=0; i<count; i++)); do
+                line=$(echo "$response" | jq ".issues[$i].line")
+                column=$(echo "$response" | jq ".issues[$i].column")
+                message=$(echo "$response" | jq -r ".issues[$i].message")
+                type=$(echo "$response" | jq -r ".issues[$i].type")
 
-              RESPONSE=$(curl -s -X POST "$API_URL" \
-                -H "Content-Type: application/json" \
-                -d "$JSON_PAYLOAD")
-
-              echo "API Response for $FILE:"
-              echo "$RESPONSE"
-
-              ISSUES=$(echo "$RESPONSE" | jq -r '.issues // []')
-
-              if [[ "$ISSUES" != "[]" && "$ISSUES" != "null" ]]; then
-                ISSUE_COUNT=$(echo "$ISSUES" | jq 'length')
-                echo "Found $ISSUE_COUNT issues for $FILE"
-
-                for (( i=0; i<$ISSUE_COUNT; i++ )); do
-                  LINE=$(echo "$ISSUES" | jq -r ".[$i].line")
-                  MESSAGE=$(echo "$ISSUES" | jq -r ".[$i].message")
-                  TYPE=$(echo "$ISSUES" | jq -r ".[$i].type")
-                  SOURCE=$(echo "$ISSUES" | jq -r ".[$i].source")
-
-                  COMMENT_BODY="**$TYPE** from $SOURCE: $MESSAGE"
-
-                  if is_line_in_diff "$FILE" "$LINE"; then
-                    echo "Posting inline comment on $FILE:$LINE"
-                    curl -s -X POST \
-                      -H "Authorization: token $GITHUB_TOKEN" \
-                      -H "Accept: application/vnd.github.v3+json" \
-                      "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments" \
-                      -d "{
-                        \"body\": \"$COMMENT_BODY\",
-                        \"commit_id\": \"$COMMIT_ID\",
-                        \"path\": \"$FILE\",
-                        \"line\": $LINE
-                      }"
-                  else
-                    echo "Line $LINE not in diff — posting global issue comment"
-                    curl -s -X POST \
-                      -H "Authorization: token $GITHUB_TOKEN" \
-                      -H "Accept: application/vnd.github.v3+json" \
-                      "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-                      -d "{
-                        \"body\": \"In **$FILE:$LINE** — $COMMENT_BODY\"
-                      }"
-                  fi
-                done
-              else
-                echo "No specific issues found for $FILE"
-              fi
-
-              echo "-----------------------------------"
+                # Format message for global comment if line not in diff
+                if ! grep -q "$file:$line" <<< "$DIFF_FILES"; then
+                  body="In **$file:$line** — **$type** from bot: $message"
+                  curl -s -X POST \
+                    -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                    -H "Accept: application/vnd.github.v3+json" \
+                    https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+                    -d "{\"body\": \"$body\"}"
+                fi
+              done
             fi
           done
-
-      - name: Add summary comment with overall analysis
-        uses: thollander/actions-comment-pull-request@v2
-        with:
-          message: |
-            # Code Analysis Summary
-
-            Analysis completed for all changed files. See inline or global comments for details.
-
-            *Automated analysis performed on changed files*
-          comment_tag: code-analysis-summary
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          API_URL: "https://3899-154-124-39-72.ngrok-free.app/analyze/code"
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          LATEST_COMMIT: ${{ env.LATEST_COMMIT }}
+          DIFF_FILES: ${{ env.DIFF_FILES }}
