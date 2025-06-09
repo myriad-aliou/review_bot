@@ -270,13 +270,13 @@ IMPORTANT:
     
     # Si tous les essais échouent, retourner un message d'information
     logger.error("All Ollama analysis attempts failed")
-    return [{{
+    return [{
         "line": 1,
         "column": 0,
         "type": "info",
         "message": "Ollama AI analysis unavailable (service error)",
         "source": "ollama"
-    }}]
+    }]
 
 
 def parse_ollama_response(content):
@@ -391,6 +391,24 @@ def parse_ollama_response(content):
         logger.error(f"Content: {content}")
         return None
 
+
+def test_ollama_connection():
+    """Test function to check Ollama connectivity"""
+    config = get_config()
+    ollama_config = config.get("ollama", {})
+    ollama_host = ollama_config.get("host", "http://rnoqi-154-124-39-72.a.free.pinggy.link")
+    
+    try:
+        response = requests.get(f"{ollama_host}/api/tags", timeout=10)
+        if response.status_code == 200:
+            logger.info("Ollama connection successful")
+            return True
+        else:
+            logger.error(f"Ollama connection failed with status: {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"Ollama connection test failed: {e}")
+        return False
 
 def test_ollama_connection():
     """Test function to check Ollama connectivity"""
