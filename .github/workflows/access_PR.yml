@@ -35,7 +35,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          API_URL="https://ad37-154-124-39-72.ngrok-free.app/analyze/code"
+          API_URL="https://fab7-154-124-39-72.ngrok-free.app/analyze/code"
           PR_NUMBER=${{ github.event.pull_request.number }}
           REPO="${GITHUB_REPOSITORY}"
           COMMIT_ID="${{ github.event.pull_request.head.sha }}"

@@ -198,31 +198,31 @@ Code with line numbers:
 {numbered_code}
 
 Please respond ONLY with a JSON array of issues in this exact format(like this):
-{
+{{
   "issues": [
-    {
+    {{
       "line": 1,
       "column": 1,
       "type": "error",
       "message": "F821: undefined name 'string'",
       "source": "flake8"
-    },
-    {
+    }},
+    {{
       "line": 1,
       "column": 7,
       "type": "warning",
       "message": "W292: no newline at end of file",
       "source": "flake8"
-    },
-    {
+    }},
+    {{
       "line": 1,
       "column": 0,
       "type": "convention",
       "message": "Final newline missing",
       "source": "pylint"
-    }
+    }}
     ]
-}
+}}
 
 Focus on:
 - Security vulnerabilities
@@ -231,7 +231,7 @@ Focus on:
 - Best practices violations
 - Potential bugs
 
-Return { "issues": [] } if no issues found. Do not include explanatory text, only the JSON array."""
+Return {{ "issues": [] }} if no issues found. Do not include explanatory text, only the JSON array."""
 
     for attempt in range(max_retries + 1):
         try:
