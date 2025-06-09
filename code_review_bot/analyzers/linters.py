@@ -175,7 +175,7 @@ def run_ollama(code, filename):
     
     # Configuration par défaut
     ollama_model = ollama_config.get("model", "deepseek-coder:latest")
-    ollama_host = ollama_config.get("host", "http://rnslh-154-124-39-72.a.free.pinggy.link")
+    ollama_host = ollama_config.get("host", "http://rnoqi-154-124-39-72.a.free.pinggy.link")
     timeout = ollama_config.get("timeout", 30)
     max_retries = ollama_config.get("max_retries", 2)
     
