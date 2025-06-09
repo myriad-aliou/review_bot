@@ -33,7 +33,7 @@ def analyze_code(code, filename="temp.py"):
         pylint_issues = run_pylint(temp_path)
         bandit_issues = run_bandit(temp_path)
         #pip_audit_issues = run_pip_audit()
-        ollama_issues = run_ollama(temp_path, filename)
+        ollama_issues = run_ollama(code)
         
         # Combiner tous les problèmes
         all_issues = flake8_issues + pylint_issues + bandit_issues + ollama_issues #+ pip_audit_issues
@@ -168,266 +168,39 @@ def run_bandit(file_path):
 ##ajout ollama
 
 
-def run_ollama(code, filename):
-    """Exécute l'analyse de code via Ollama avec parsing structuré"""
+def run_ollama(code):
+    """Exécute l'analyse de code via Ollama (modèle Deepseek)"""
     config = get_config()
-    ollama_config = config.get("ollama", {})
-    
-    # Configuration par défaut
-    ollama_model = ollama_config.get("model", "deepseek-coder:latest")
-    ollama_host = ollama_config.get("host", "http://rnoqi-154-124-39-72.a.free.pinggy.link")
-    timeout = ollama_config.get("timeout", 30)
-    max_retries = ollama_config.get("max_retries", 2)
-    
-    # Vérifier si Ollama est activé
-    if not ollama_config.get("enabled", True):
-        logger.info("Ollama analysis disabled in configuration")
-        return []
-    
-    # Numéroter les lignes pour le contexte
-    numbered_lines = []
-    for i, line in enumerate(code.split('\n'), 1):
-        numbered_lines.append(f"{i:3d}: {line}")
-    numbered_code = '\n'.join(numbered_lines)
-    
-    # Prompt simplifié et plus direct
-    prompt = f"""Analyze this Python code and return ONLY a valid JSON response.
+    ollama_model = config.get("ollama", {}).get("model", "deepseek-coder:latest")
+    ollama_host = config.get("ollama", {}).get("host", "http://rnhws-154-124-39-72.a.free.pinggy.link")
 
-File: {filename}
-Code:
-{numbered_code}
-
-Return a JSON object with this exact structure:
-{{
-  "issues": [
-    {{
-      "line": 1,
-      "column": 0,
-      "type": "warning",
-      "message": "Issue description",
-      "source": "ollama"
-    }}
-  ]
-}}
-
-If no issues found, return: {{"issues": []}}
-
-IMPORTANT: 
-- Return ONLY valid JSON, no other text
-- Each issue must have: line (number), column (number), type (string), message (string), source (string)
-- Types can be: error, warning, info, convention
-- Focus on: security, performance, code quality, best practices"""
-
-    for attempt in range(max_retries + 1):
-        try:
-            logger.info(f"Ollama analysis attempt {attempt + 1}/{max_retries + 1}")
-            
-            response = requests.post(
-                f"{ollama_host}/api/generate",
-                json={
-                    "model": ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,
-                        "top_p": 0.9,
-                        "num_predict": 2000,  # Limit response length
-                        "stop": ["\n\n", "```"]  # Stop at common text indicators
-                    }
-                },
-                timeout=timeout
-            )
-            response.raise_for_status()
-            
-            data = response.json()
-            content = data.get("response", "").strip()
-            
-            # Log the raw response for debugging
-            logger.debug(f"Raw Ollama response: {content[:200]}...")
-            
-            if not content:
-                logger.warning("Empty response from Ollama")
-                continue
-                
-            # Parser la réponse JSON
-            issues = parse_ollama_response(content)
-            
-            if issues is not None:
-                logger.info(f"Ollama found {len(issues)} issues")
-                return issues
-            else:
-                logger.warning(f"Failed to parse Ollama response on attempt {attempt + 1}")
-                logger.debug(f"Response content: {content}")
-                
-        except requests.exceptions.Timeout:
-            logger.error(f"Ollama request timeout on attempt {attempt + 1}")
-        except requests.exceptions.ConnectionError:
-            logger.error(f"Cannot connect to Ollama on attempt {attempt + 1}")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ollama request error on attempt {attempt + 1}: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected Ollama error on attempt {attempt + 1}: {e}")
-    
-    # Si tous les essais échouent, retourner un message d'information
-    logger.error("All Ollama analysis attempts failed")
-    return [{
-        "line": 1,
-        "column": 0,
-        "type": "info",
-        "message": "Ollama AI analysis unavailable (service error)",
-        "source": "ollama"
-    }]
-
-
-def parse_ollama_response(content):
-    """Parse la réponse d'Ollama pour extraire les issues structurées"""
     try:
-        # Log the content we're trying to parse
-        logger.debug(f"Parsing content: {content}")
-        
-        # Nettoyer la réponse
-        cleaned_content = content.strip()
-        
-        # Remove common prefixes/suffixes that might interfere
-        if cleaned_content.startswith("```json"):
-            cleaned_content = cleaned_content[7:]
-        if cleaned_content.startswith("```"):
-            cleaned_content = cleaned_content[3:]
-        if cleaned_content.endswith("```"):
-            cleaned_content = cleaned_content[:-3]
-        
-        cleaned_content = cleaned_content.strip()
-        
-        # If empty after cleaning, return empty list
-        if not cleaned_content:
-            logger.warning("Content is empty after cleaning")
-            return []
-        
-        # Try to find JSON in the response
-        json_patterns = [
-            r'\{[^{}]*"issues"[^{}]*\[[^\]]*\][^{}]*\}',  # Look for issues array
-            r'\{.*\}',  # Any JSON object
-            r'\[.*\]'   # Any JSON array
-        ]
-        
-        json_str = None
-        for pattern in json_patterns:
-            match = re.search(pattern, cleaned_content, re.DOTALL)
-            if match:
-                json_str = match.group(0)
-                break
-        
-        if not json_str:
-            # If no JSON pattern found, try the whole content
-            json_str = cleaned_content
-        
-        logger.debug(f"Attempting to parse JSON: {json_str}")
-        
-        # Parse JSON
-        try:
-            parsed_data = json.loads(json_str)
-        except json.JSONDecodeError:
-            # Try to fix common JSON issues
-            json_str = json_str.replace("'", '"')  # Replace single quotes
-            json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)  # Remove trailing commas
-            parsed_data = json.loads(json_str)
-        
-        # Handle different response formats
-        if isinstance(parsed_data, dict):
-            if "issues" in parsed_data:
-                raw_issues = parsed_data["issues"]
-            else:
-                # If it's a dict but no issues key, treat as single issue
-                raw_issues = [parsed_data]
-        elif isinstance(parsed_data, list):
-            raw_issues = parsed_data
-        else:
-            logger.error(f"Unexpected JSON structure: {type(parsed_data)}")
-            return None
-        
-        # Validate and convert issues
-        parsed_issues = []
-        for issue in raw_issues:
-            if not isinstance(issue, dict):
-                continue
-            
-            # Validation des champs requis
-            if "line" not in issue or "message" not in issue:
-                logger.warning(f"Issue missing required fields: {issue}")
-                continue
-            
-            try:
-                parsed_issue = {
-                    "line": int(issue.get("line", 1)),
-                    "column": int(issue.get("column", 0)),
-                    "type": issue.get("type", "info"),
-                    "message": str(issue.get("message", "Unknown issue")),
-                    "source": "ollama"
-                }
-                
-                # Validate line number
-                if parsed_issue["line"] < 1:
-                    parsed_issue["line"] = 1
-                
-                # Validate type
-                if parsed_issue["type"] not in ["error", "warning", "info", "convention"]:
-                    parsed_issue["type"] = "info"
-                
-                parsed_issues.append(parsed_issue)
-                
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Error processing issue {issue}: {e}")
-                continue
-        
-        logger.info(f"Successfully parsed {len(parsed_issues)} issues")
-        return parsed_issues
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error: {e}")
-        logger.error(f"Content that failed to parse: {content}")
-        return None
+        prompt = f"Analyse ce code Python et retourne les problèmes de qualité, sécurité ou optimisation :\n\n{code}"
+        response = requests.post(
+            f"{ollama_host}/api/generate",
+            json={"model": ollama_model, "prompt": prompt, "stream": False}
+        )
+        response.raise_for_status()
+        data = response.json()
+        content = data.get("response", "")
+
+        # Tu peux affiner ce parsing selon le style de réponse de ton modèle
+        return [{
+            "line": 0,
+            "column": 0,
+            "type": "ai",
+            "message": content.strip(),
+            "source": "ollama"
+        }]
     except Exception as e:
-        logger.error(f"Error parsing Ollama response: {e}")
-        logger.error(f"Content: {content}")
-        return None
-
-
-def test_ollama_connection():
-    """Test function to check Ollama connectivity"""
-    config = get_config()
-    ollama_config = config.get("ollama", {})
-    ollama_host = ollama_config.get("host", "http://rnhws-154-124-39-72.a.free.pinggy.link")
-    
-    try:
-        response = requests.get(f"{ollama_host}/api/tags", timeout=10)
-        if response.status_code == 200:
-            logger.info("Ollama connection successful")
-            return True
-        else:
-            logger.error(f"Ollama connection failed with status: {response.status_code}")
-            return False
-    except Exception as e:
-        logger.error(f"Ollama connection test failed: {e}")
-        return False
-
-def test_ollama_connection():
-    """Test function to check Ollama connectivity"""
-    config = get_config()
-    ollama_config = config.get("ollama", {})
-    ollama_host = ollama_config.get("host", "http://rnoqi-154-124-39-72.a.free.pinggy.link")
-    
-    try:
-        response = requests.get(f"{ollama_host}/api/tags", timeout=10)
-        if response.status_code == 200:
-            logger.info("Ollama connection successful")
-            return True
-        else:
-            logger.error(f"Ollama connection failed with status: {response.status_code}")
-            return False
-    except Exception as e:
-        logger.error(f"Ollama connection test failed: {e}")
-        return False
-
+        logger.error(f"Ollama error: {e}")
+        return [{
+            "line": 0,
+            "column": 0,
+            "type": "ai",
+            "message": "Erreur lors de l'appel à Ollama.",
+            "source": "ollama"
+        }]
 
 
 def generate_summary(issues):
