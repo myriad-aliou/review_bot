@@ -44,44 +44,66 @@ jobs:
           echo "Latest commit ID: $COMMIT_ID"
           echo "Repository: $REPO"
           
-          # Lire les fichiers modifiés depuis l'output de l'étape précédente
           CHANGED_FILES="${{ steps.changed-files.outputs.files }}"
           
           if [ -z "$CHANGED_FILES" ]; then
             echo "No files changed in this PR"
             exit 0
           fi
-          
-          # Traiter chaque fichier individuellement
+
+          # Extensions à ignorer
+          IGNORE_EXTENSIONS=("deb" "zip" "pdf" "png" "jpg" "jpeg" "gif" "exe" "dll" "so" "dylib" "mp4" "mp3" "avi" "mov")
+
           echo "$CHANGED_FILES" | while IFS= read -r FILE; do
-            # Ignorer les lignes vides
             if [ -z "$FILE" ]; then
               continue
             fi
-            
-            # Vérifier que le fichier existe et n'est pas un répertoire
+
+            # Vérifier que le fichier existe et est un fichier normal
             if [ ! -f "$FILE" ]; then
               echo "Skipping $FILE (not a regular file or doesn't exist)"
               continue
             fi
-            
+
+            # Extraire l'extension du fichier (en minuscule)
+            EXT="${FILE##*.}"
+            EXT="${EXT,,}"
+
+            # Vérifier si l'extension est dans la liste d'extensions à ignorer
+            SKIP_FILE=false
+            for IGN_EXT in "${IGNORE_EXTENSIONS[@]}"; do
+              if [ "$EXT" = "$IGN_EXT" ]; then
+                SKIP_FILE=true
+                break
+              fi
+            done
+
+            if $SKIP_FILE; then
+              echo "Skipping binary or non-code file: $FILE"
+              continue
+            fi
+
+            # Optionnel : détecter automatiquement si fichier binaire avec la commande file
+            if file "$FILE" | grep -qE 'binary|compressed|archive'; then
+              echo "Skipping detected binary/compressed file: $FILE"
+              continue
+            fi
+
             echo "Processing file: $FILE"
-            
-            # Obtenir le contenu du fichier et l'échapper pour JSON
+
+            # Lire le contenu et l'échapper en JSON
             if ! FILE_CONTENT=$(jq -Rs . < "$FILE" 2>/dev/null); then
               echo "Error: Could not read or process file $FILE"
               continue
             fi
-            
-            # Créer le payload JSON
+
             JSON_PAYLOAD=$(jq -n \
               --argjson code "$FILE_CONTENT" \
               --arg filename "$FILE" \
               '{code: $code, filename: $filename}')
-            
+
             echo "Sending analysis request for $FILE..."
-            
-            # Envoyer la requête à l'API avec gestion d'erreur
+
             if RESPONSE=$(curl -s -w "%{http_code}" -X POST "$API_URL" \
               -H "Content-Type: application/json" \
               -H "Accept: application/json" \
@@ -89,46 +111,37 @@ jobs:
               --max-time 60 \
               -d "$JSON_PAYLOAD"); then
               
-              # Séparer le code de statut HTTP du corps de la réponse
               HTTP_CODE="${RESPONSE: -3}"
               RESPONSE_BODY="${RESPONSE%???}"
-              
+
               echo "HTTP Status: $HTTP_CODE"
-              
+
               if [ "$HTTP_CODE" -eq 200 ]; then
                 echo "API Response for $FILE:"
                 echo "$RESPONSE_BODY"
-                
-                # Parser les issues depuis la réponse
+
                 if ISSUES=$(echo "$RESPONSE_BODY" | jq -r '.issues // [] | if type == "array" then . else [] end' 2>/dev/null); then
-                  
-                  # Vérifier s'il y a des issues
                   ISSUE_COUNT=$(echo "$ISSUES" | jq 'length' 2>/dev/null || echo "0")
-                  
+
                   if [ "$ISSUE_COUNT" -gt 0 ]; then
                     echo "Found $ISSUE_COUNT issues for $FILE"
                     
-                    # Créer un commentaire de revue pour chaque issue
                     echo "$ISSUES" | jq -r '.[] | @base64' | while IFS= read -r ISSUE_B64; do
                       if [ -n "$ISSUE_B64" ]; then
                         ISSUE_JSON=$(echo "$ISSUE_B64" | base64 -d)
-                        
+
                         LINE=$(echo "$ISSUE_JSON" | jq -r '.line // 1')
                         MESSAGE=$(echo "$ISSUE_JSON" | jq -r '.message // "Unknown issue"')
                         TYPE=$(echo "$ISSUE_JSON" | jq -r '.type // "info"')
                         SOURCE=$(echo "$ISSUE_JSON" | jq -r '.source // "analyzer"')
-                        
-                        # Validation des données
+
                         if [ "$LINE" -le 0 ]; then
                           LINE=1
                         fi
-                        
-                        # Créer le corps du commentaire
+
                         COMMENT_BODY="**${TYPE^^}** from $SOURCE: $MESSAGE"
-                        
                         echo "Adding comment at $FILE:$LINE"
-                        
-                        # Poster le commentaire de revue via l'API GitHub
+
                         COMMENT_RESPONSE=$(curl -s -w "%{http_code}" -X POST \
                           -H "Authorization: token $GITHUB_TOKEN" \
                           -H "Accept: application/vnd.github.v3+json" \
@@ -140,9 +153,9 @@ jobs:
                             --arg path "$FILE" \
                             --argjson line "$LINE" \
                             '{body: $body, commit_id: $commit_id, path: $path, line: $line}')")
-                        
+
                         COMMENT_HTTP_CODE="${COMMENT_RESPONSE: -3}"
-                        
+
                         if [ "$COMMENT_HTTP_CODE" -eq 201 ]; then
                           echo "✓ Comment posted successfully"
                         else
@@ -164,7 +177,7 @@ jobs:
             else
               echo "Error: Could not connect to API for $FILE"
             fi
-            
+
             echo "-----------------------------------"
           done
 
