@@ -12,98 +12,198 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetch all history to ensure we can access the changed files
-      
-      - name: Get changed files
+          fetch-depth: 0
+
+      - name: Get changed files with diff context
         id: changed-files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          CHANGED_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files --jq '.files[].path')
-          echo "Changed files: $CHANGED_FILES"
+          # Get changed files with their diff context
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          echo "BASE_SHA=$BASE_SHA" >> $GITHUB_ENV
+          echo "HEAD_SHA=$HEAD_SHA" >> $GITHUB_ENV
+          
+          # Get files that are actually in the diff (not binary files)
+          CHANGED_FILES=$(git diff --name-only --diff-filter=AM $BASE_SHA..$HEAD_SHA | grep -E '\.(py|js|ts|java|cpp|c|h|yml|yaml|json|md|txt|sh)$' || true)
+          
+          echo "Changed files to analyze:"
+          echo "$CHANGED_FILES"
+          
+          # Store changed files
           echo "CHANGED_FILES<<EOF" >> $GITHUB_ENV
           echo "$CHANGED_FILES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
-      
+
+      - name: Get diff context for files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create a mapping of files to their line numbers in the diff
+          mkdir -p /tmp/diff_context
+          
+          for FILE in $CHANGED_FILES; do
+            if [ -f "$FILE" ]; then
+              echo "Getting diff context for: $FILE"
+              # Get the diff for this specific file with line numbers
+              git diff $BASE_SHA..$HEAD_SHA -- "$FILE" > "/tmp/diff_context/${FILE//\//_}.diff"
+              
+              # Extract added/modified line numbers from the diff
+              DIFF_LINES=$(git diff $BASE_SHA..$HEAD_SHA -- "$FILE" | grep -n "^+" | grep -v "^+++" | cut -d: -f1 | tr '\n' ',' | sed 's/,$//')
+              echo "Diff lines for $FILE: $DIFF_LINES"
+              echo "$DIFF_LINES" > "/tmp/diff_context/${FILE//\//_}.lines"
+            fi
+          done
+
       - name: Analyze files and post review comments
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           API_URL="https://edaa-41-82-188-39.ngrok-free.app/analyze/code"
-          PR_NUMBER=${{ github.event.pull_request.number }}
           REPO="${GITHUB_REPOSITORY}"
-          COMMIT_ID=$(gh pr view $PR_NUMBER --json commits --jq '.commits[-1].oid')
+          COMMIT_ID="${HEAD_SHA}"
           
           echo "Latest commit ID: $COMMIT_ID"
+          
+          # Create a summary of all issues
+          ALL_ISSUES=""
+          TOTAL_FILES=0
+          TOTAL_ISSUES=0
           
           # Process each file individually
           for FILE in $CHANGED_FILES; do
             if [ -f "$FILE" ]; then
+              # Skip binary files and very large files
+              FILE_SIZE=$(wc -c < "$FILE")
+              if [ $FILE_SIZE -gt 1048576 ]; then  # Skip files larger than 1MB
+                echo "Skipping large file: $FILE (${FILE_SIZE} bytes)"
+                continue
+              fi
+              
+              # Check if file is text
+              if ! file "$FILE" | grep -q "text"; then
+                echo "Skipping binary file: $FILE"
+                continue
+              fi
+              
               echo "Processing file: $FILE"
+              TOTAL_FILES=$((TOTAL_FILES + 1))
+              
               # Get file content and escape properly for JSON
-              FILE_CONTENT=$(cat "$FILE" | jq -Rs .)
+              FILE_CONTENT=$(cat "$FILE" | jq -Rs . 2>/dev/null || echo '""')
+              
+              # Skip if content is too large for API
+              if [ ${#FILE_CONTENT} -gt 100000 ]; then
+                echo "File content too large for API: $FILE"
+                continue
+              fi
+              
               # Create JSON payload for this file
               JSON_PAYLOAD="{\"code\": $FILE_CONTENT, \"filename\": \"$FILE\"}"
+              
               echo "Sending request for $FILE..."
               
-              # Send to API and capture response
-              RESPONSE=$(curl -s -X POST "$API_URL" \
+              # Send to API and capture response with timeout
+              RESPONSE=$(timeout 30 curl -s -X POST "$API_URL" \
                 -H "Content-Type: application/json" \
-                -d "$JSON_PAYLOAD")
+                -H "Accept: application/json" \
+                -d "$JSON_PAYLOAD" 2>/dev/null || echo '{"issues": [], "error": "API timeout or failure"}')
                 
               echo "API Response for $FILE:"
               echo "$RESPONSE"
               
               # Parse issues from the response
-              ISSUES=$(echo "$RESPONSE" | jq -r '.issues // []')
+              ISSUES=$(echo "$RESPONSE" | jq -r '.issues // []' 2>/dev/null || echo '[]')
               
               # If there are issues, create comments for each
               if [[ "$ISSUES" != "[]" && "$ISSUES" != "null" ]]; then
                 # Count issues
-                ISSUE_COUNT=$(echo "$ISSUES" | jq 'length')
+                ISSUE_COUNT=$(echo "$ISSUES" | jq 'length' 2>/dev/null || echo '0')
                 echo "Found $ISSUE_COUNT issues for $FILE"
+                TOTAL_ISSUES=$((TOTAL_ISSUES + ISSUE_COUNT))
                 
-                # Create a review comment for each issue
+                # Get diff lines for this file
+                DIFF_LINES_FILE="/tmp/diff_context/${FILE//\//_}.lines"
+                VALID_LINES=""
+                if [ -f "$DIFF_LINES_FILE" ]; then
+                  VALID_LINES=$(cat "$DIFF_LINES_FILE")
+                fi
+                
+                # Process each issue
                 for (( i=0; i<$ISSUE_COUNT; i++ )); do
-                  LINE=$(echo "$ISSUES" | jq -r ".[$i].line")
-                  MESSAGE=$(echo "$ISSUES" | jq -r ".[$i].message")
-                  TYPE=$(echo "$ISSUES" | jq -r ".[$i].type")
-                  SOURCE=$(echo "$ISSUES" | jq -r ".[$i].source")
+                  LINE=$(echo "$ISSUES" | jq -r ".[$i].line // 0" 2>/dev/null || echo '0')
+                  MESSAGE=$(echo "$ISSUES" | jq -r ".[$i].message // \"Unknown issue\"" 2>/dev/null || echo 'Unknown issue')
+                  TYPE=$(echo "$ISSUES" | jq -r ".[$i].type // \"info\"" 2>/dev/null || echo 'info')
+                  SOURCE=$(echo "$ISSUES" | jq -r ".[$i].source // \"analyzer\"" 2>/dev/null || echo 'analyzer')
                   
-                  # Create the review comment using the GitHub REST API
-                  COMMENT_BODY="**$TYPE** from $SOURCE: $MESSAGE"
+                  # Escape special characters for JSON
+                  MESSAGE_ESCAPED=$(echo "$MESSAGE" | sed 's/"/\\"/g' | sed 's/\\/\\\\/g' | tr -d '\n\r')
                   
-                  echo "Adding comment at $FILE:$LINE - $COMMENT_BODY"
+                  # Create the review comment body
+                  COMMENT_BODY="**${TYPE}** from ${SOURCE}: ${MESSAGE_ESCAPED}"
                   
-                  # Use GitHub REST API to post the review comment
-                  curl -s -X POST \
-                    -H "Authorization: token $GITHUB_TOKEN" \
-                    -H "Accept: application/vnd.github.v3+json" \
-                    "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments" \
-                    -d "{
-                      \"body\": \"$COMMENT_BODY\",
-                      \"commit_id\": \"$COMMIT_ID\",
-                      \"path\": \"$FILE\",
-                      \"line\": $LINE
-                    }"
+                  # Add to summary
+                  ALL_ISSUES="${ALL_ISSUES}\n- **${FILE}:${LINE}** - ${TYPE}: ${MESSAGE_ESCAPED}"
+                  
+                  # Only post inline comments for lines that are in the diff
+                  if [[ "$LINE" != "0" ]] && [[ "$VALID_LINES" == *"$LINE"* ]]; then
+                    echo "Adding inline comment at $FILE:$LINE"
+                    
+                    # Get the diff hunk for this line
+                    DIFF_HUNK=$(git diff $BASE_SHA..$HEAD_SHA -- "$FILE" | grep -A5 -B5 "^+.*" | head -20 | jq -Rs .)
+                    
+                    # Use GitHub REST API to post the review comment
+                    curl -s -X POST \
+                      -H "Authorization: token $GITHUB_TOKEN" \
+                      -H "Accept: application/vnd.github.v3+json" \
+                      "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/comments" \
+                      -d "{
+                        \"body\": \"$COMMENT_BODY\",
+                        \"commit_id\": \"$COMMIT_ID\",
+                        \"path\": \"$FILE\",
+                        \"line\": $LINE,
+                        \"diff_hunk\": $DIFF_HUNK
+                      }" > /tmp/comment_response.json
+                      
+                    # Check if comment was posted successfully
+                    if grep -q "\"id\":" /tmp/comment_response.json; then
+                      echo "✓ Comment posted successfully"
+                    else
+                      echo "✗ Failed to post comment:"
+                      cat /tmp/comment_response.json
+                    fi
+                  else
+                    echo "Skipping inline comment for line $LINE (not in diff or line 0)"
+                  fi
                 done
               else
-                # No issues detected, add a general comment
-                echo "No specific issues found for $FILE"
+                echo "No issues found for $FILE"
               fi
               
               echo "-----------------------------------"
             fi
           done
           
+          # Store summary for final comment
+          echo "ANALYSIS_SUMMARY<<EOF" >> $GITHUB_ENV
+          echo -e "Analyzed $TOTAL_FILES files and found $TOTAL_ISSUES issues:\n$ALL_ISSUES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Add summary comment with overall analysis
         uses: thollander/actions-comment-pull-request@v2
         with:
           message: |
-            # Code Analysis Summary
+            # 🔍 Code Analysis Summary
             
-            Analysis completed for all changed files. See inline comments for details.
+            ${{ env.ANALYSIS_SUMMARY }}
             
-            *Automated analysis performed on changed files*
+            ---
+            *Automated analysis performed on changed files using external API and DeepSeek*
+            
+            **Note**: Only files with text content under 1MB were analyzed. Binary files and very large files were skipped.
           comment_tag: code-analysis-summary
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
