@@ -107,17 +107,28 @@ jobs:
               
               echo "Sending request for $FILE..."
               
+              # Test API connectivity first
+              curl -s -H "ngrok-skip-browser-warning: true" "$API_URL" > /dev/null || echo "API connectivity test failed"
+              
               # Send to API and capture response with timeout
-              RESPONSE=$(timeout 30 curl -s -X POST "$API_URL" \
+              RESPONSE=$(timeout 60 curl -s -X POST "$API_URL" \
                 -H "Content-Type: application/json" \
                 -H "Accept: application/json" \
-                -d "$JSON_PAYLOAD" 2>/dev/null || echo '{"issues": [], "error": "API timeout or failure"}')
+                -H "ngrok-skip-browser-warning: true" \
+                -d "$JSON_PAYLOAD" || echo '{"issues": [], "error": "API timeout or failure"}')
                 
               echo "API Response for $FILE:"
               echo "$RESPONSE"
               
               # Parse issues from the response
               ISSUES=$(echo "$RESPONSE" | jq -r '.issues // []' 2>/dev/null || echo '[]')
+              ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error // empty' 2>/dev/null || echo '')
+              
+              # If API failed, skip this file
+              if [[ ! -z "$ERROR_MSG" ]]; then
+                echo "API error for $FILE: $ERROR_MSG"
+                continue
+              fi
               
               # If there are issues, create comments for each
               if [[ "$ISSUES" != "[]" && "$ISSUES" != "null" ]]; then
