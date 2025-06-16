@@ -111,7 +111,7 @@ jobs:
               curl -s -H "ngrok-skip-browser-warning: true" "$API_URL" > /dev/null || echo "API connectivity test failed"
               
               # Send to API and capture response with timeout
-              RESPONSE=$(timeout 60 curl -s -X POST "$API_URL" \
+              RESPONSE=$(curl -s -X POST "$API_URL" \
                 -H "Content-Type: application/json" \
                 -H "Accept: application/json" \
                 -H "ngrok-skip-browser-warning: true" \
