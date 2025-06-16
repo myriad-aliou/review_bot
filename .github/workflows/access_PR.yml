@@ -63,7 +63,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          API_URL="https://edaa-41-82-188-39.ngrok-free.app/analyze/code"
+          API_URL="https://93b9-41-82-188-39.ngrok-free.app/analyze/code"
           REPO="${GITHUB_REPOSITORY}"
           COMMIT_ID="${HEAD_SHA}"
           
@@ -110,12 +110,12 @@ jobs:
               # Test API connectivity first
               curl -s -H "ngrok-skip-browser-warning: true" "$API_URL" > /dev/null || echo "API connectivity test failed"
               
-              # Send to API and capture response with timeout
+              # Send to API and capture response
               RESPONSE=$(curl -s -X POST "$API_URL" \
                 -H "Content-Type: application/json" \
                 -H "Accept: application/json" \
                 -H "ngrok-skip-browser-warning: true" \
-                -d "$JSON_PAYLOAD" || echo '{"issues": [], "error": "API timeout or failure"}')
+                -d "$JSON_PAYLOAD" || echo '{"issues": [], "error": "API failure"}')
                 
               echo "API Response for $FILE:"
               echo "$RESPONSE"
@@ -160,12 +160,9 @@ jobs:
                   # Add to summary
                   ALL_ISSUES="${ALL_ISSUES}\n- **${FILE}:${LINE}** - ${TYPE}: ${MESSAGE_ESCAPED}"
                   
-                  # Only post inline comments for lines that are in the diff
-                  if [[ "$LINE" != "0" ]] && [[ "$VALID_LINES" == *"$LINE"* ]]; then
+                  # Post inline comment for any valid line number
+                  if [[ "$LINE" != "0" ]]; then
                     echo "Adding inline comment at $FILE:$LINE"
-                    
-                    # Get the diff hunk for this line
-                    DIFF_HUNK=$(git diff $BASE_SHA..$HEAD_SHA -- "$FILE" | grep -A5 -B5 "^+.*" | head -20 | jq -Rs .)
                     
                     # Use GitHub REST API to post the review comment
                     curl -s -X POST \
@@ -176,8 +173,7 @@ jobs:
                         \"body\": \"$COMMENT_BODY\",
                         \"commit_id\": \"$COMMIT_ID\",
                         \"path\": \"$FILE\",
-                        \"line\": $LINE,
-                        \"diff_hunk\": $DIFF_HUNK
+                        \"line\": $LINE
                       }" > /tmp/comment_response.json
                       
                     # Check if comment was posted successfully
@@ -188,7 +184,7 @@ jobs:
                       cat /tmp/comment_response.json
                     fi
                   else
-                    echo "Skipping inline comment for line $LINE (not in diff or line 0)"
+                    echo "Skipping inline comment for line 0"
                   fi
                 done
               else
