@@ -172,7 +172,7 @@ def run_ollama(code):
     """Exécute l'analyse de code via Ollama (modèle Deepseek)"""
     config = get_config()
     ollama_model = config.get("ollama", {}).get("model", "deepseek-coder:latest")
-    ollama_host = config.get("ollama", {}).get("host", "http://rnepx-154-124-39-72.a.free.pinggy.link")
+    ollama_host = config.get("ollama", {}).get("host", "http://rnydx-41-82-188-39.a.free.pinggy.link")
 
     try:
         prompt = f"Analyse ce code Python et retourne les problèmes de qualité, sécurité ou optimisation :\n\n{code}"
