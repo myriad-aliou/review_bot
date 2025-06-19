@@ -1,5 +1,6 @@
 import tempfile
 import os
+import requests
 import subprocess
 import json
 import re
@@ -32,9 +33,10 @@ def analyze_code(code, filename="temp.py"):
         pylint_issues = run_pylint(temp_path)
         bandit_issues = run_bandit(temp_path)
         #pip_audit_issues = run_pip_audit()
+        ollama_issues = run_ollama(code)
         
         # Combiner tous les problèmes
-        all_issues = flake8_issues + pylint_issues + bandit_issues #+ pip_audit_issues
+        all_issues = flake8_issues + pylint_issues + bandit_issues + ollama_issues #+ pip_audit_issues
         
         # Générer un résumé
         summary = generate_summary(all_issues)
@@ -163,39 +165,162 @@ def run_bandit(file_path):
     
     return issues
 
-# def run_pip_audit():
-#     """Exécute pip-audit pour détecter les vulnérabilités des dépendances"""
-#     result = subprocess.run(
-#         ["pip-audit", "--format", "json"],
-#         capture_output=True,
-#         text=True
-#     )
-#     issues = []
+##ajout ollama
+
+
+def run_ollama(code):
+    """Exécute l'analyse de code via Ollama (modèle Deepseek)"""
+    config = get_config()
+    ollama_model = config.get("ollama", {}).get("model", "deepseek-coder:latest")
+    ollama_host = config.get("ollama", {}).get("host", "http://rnoft-41-82-191-116.a.free.pinggy.link")
+
+    try:
+        prompt = f"Analyse ce code Python et retourne les problèmes de qualité, sécurité ou optimisation :\n\n{code}"
+        response = requests.post(
+            f"{ollama_host}/api/generate",
+            json={"model": ollama_model, "prompt": prompt, "stream": False}
+        )
+        response.raise_for_status()
+        data = response.json()
+        content = data.get("response", "")
+
+        return parse_ollama_response(content)
+    except Exception as e:
+        logger.error(f"Ollama error: {e}")
+        return [{
+            "line": 1,
+            "column": 0,
+            "type": "ai",
+            "message": "Erreur lors de l'appel à Ollama.",
+            "source": "ollama"
+        }]
+
+
+def parse_ollama_response(content):
+    """Parse la réponse d'Ollama pour extraire les problèmes individuels avec numéros de ligne"""
+    issues = []
     
-#     if result.stdout:
-#         try:
-#             pip_audit_output = json.loads(result.stdout)
-#             # Log the output to check the structure
-#             logger.info(f"pip-audit output: {pip_audit_output}")
+    # Nettoyer le contenu
+    content = content.strip()
+    
+    # Diviser en lignes et traiter chaque ligne
+    lines = content.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Ignorer les lignes vides, les markdown et les commentaires
+        if not line or line.startswith('```') or line.startswith('#'):
+            continue
             
-#             for advisory in pip_audit_output:
-#                 # Ensure the advisory is a dictionary and contains expected fields
-#                 if isinstance(advisory, dict) and 'advisory' in advisory:
-#                     advisory_data = advisory['advisory']
-#                     issues.append({
-#                         "line": 0,  # pip-audit doesn't provide line numbers
-#                         "column": 0,  # pip-audit doesn't provide column information
-#                         "type": "security",
-#                         "message": f"Vulnerability found: {advisory_data['summary']} (Package: {advisory['package']}, Version: {advisory['version']})",
-#                         "source": "pip-audit"
-#                     })
-#                 else:
-#                     logger.warning(f"Unexpected structure in pip-audit output: {advisory}")
-#         except json.JSONDecodeError:
-#             # Fallback si la sortie JSON n'est pas valide
-#             logger.error("Failed to parse pip-audit JSON output.")
+        # Chercher les patterns avec numéros de ligne
+        line_number = extract_line_number(line)
+        issue_type = extract_issue_type(line)
+        message = clean_message(line)
+        
+        # Si on a trouvé un numéro de ligne valide et un message significatif
+        if line_number > 0 and len(message) > 10:
+            issues.append({
+                "line": line_number,
+                "column": 0,
+                "type": issue_type,
+                "message": message,
+                "source": "ollama"
+            })
+        elif len(message) > 20:  # Message significatif sans numéro de ligne
+            issues.append({
+                "line": 1,  # Ligne 1 par défaut
+                "column": 0,
+                "type": issue_type,
+                "message": message,
+                "source": "ollama"
+            })
     
-#     return issues
+    # Si aucun problème parsé, retourner le contenu complet
+    if not issues and content:
+        issues.append({
+            "line": 1,
+            "column": 0,
+            "type": "quality",
+            "message": content,
+            "source": "ollama"
+        })
+    
+    return issues
+
+
+def extract_line_number(text):
+    """Extrait le numéro de ligne d'un texte"""
+    # Patterns pour trouver les numéros de ligne (adaptés aux réponses réelles d'Ollama)
+    patterns = [
+        r'\[LIGNE-(\d+)\]',         # "[LIGNE-5]"
+        r'LIGNE\s+(\d+)',           # "LIGNE 5"
+        r'ligne\s+(\d+)',           # "ligne 5"  
+        r'L(\d+)',                  # "L5"
+        r'(\d+)\s*[-:]\s*\w+\s*[-:]', # "5: TYPE -" ou "5 - TYPE:"
+        r'^\s*(\d+)\s*[.)\-]',      # "5." ou "5)" ou "5-" en début de ligne
+        r'(\d+)ème\s+Ligne',        # "3ème Ligne"
+        r'(\d+)ère\s+Ligne',        # "1ère Ligne"
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            line_num = int(match.group(1))
+            # Vérifier que c'est un numéro de ligne raisonnable (pas une année ou autre)
+            if 1 <= line_num <= 1000:
+                return line_num
+    
+    return 0
+
+
+def extract_issue_type(text):
+    """Extrait le type de problème d'un texte"""
+    text_lower = text.lower()
+    
+    # Mapping des mots-clés vers les types
+    type_keywords = {
+        'security': ['securite', 'security', 'sécurité', 'mot de passe', 'password', 'eval', 'injection'],
+        'performance': ['performance', 'optimisation', 'lent', 'inefficace', 'unused', 'non utilisé'],
+        'style': ['style', 'format', 'pep8', 'convention', 'espacement', 'indentation'],
+        'error': ['erreur', 'error', 'exception', 'bug'],
+        'warning': ['attention', 'warning', 'avertissement'],
+        'quality': ['qualite', 'quality', 'qualité', 'code']
+    }
+    
+    # Chercher les mots-clés explicites dans le texte
+    for issue_type, keywords in type_keywords.items():
+        if any(keyword in text_lower for keyword in keywords):
+            return issue_type
+    
+    return 'quality'  # Type par défaut
+
+
+def clean_message(text):
+    """Nettoie le message en supprimant les préfixes et formatage"""
+    # Supprimer les préfixes de numérotation d'Ollama
+    text = re.sub(r'^\s*\d+ère\s+Ligne\s*\[LIGNE-\d+\]\s*:\s*', '', text, flags=re.IGNORECASE)  # "1ère Ligne [LIGNE-5]: "
+    text = re.sub(r'^\s*\d+ème\s+Ligne\s*\[LIGNE-\d+\]\s*:\s*', '', text, flags=re.IGNORECASE)  # "3ème Ligne [LIGNE-7]: "
+    text = re.sub(r'^\s*\d+\s*[.)\-]\s*', '', text)  # "5. " ou "5) " ou "5- "
+    text = re.sub(r'LIGNE\s+\d+\s*[-:]\s*', '', text, flags=re.IGNORECASE)  # "LIGNE 5: "
+    text = re.sub(r'ligne\s+\d+\s*[-:]\s*', '', text, flags=re.IGNORECASE)  # "ligne 5: "
+    text = re.sub(r'L\d+\s*[-:]\s*', '', text, flags=re.IGNORECASE)  # "L5: "
+    text = re.sub(r'\[LIGNE-\d+\]\s*[-:]\s*', '', text, flags=re.IGNORECASE)  # "[LIGNE-5]: "
+    
+    # Supprimer les types explicites
+    types_to_remove = ['QUALITE', 'SECURITE', 'PERFORMANCE', 'STYLE', 'LOGIQUE', 
+                      'QUALITY', 'SECURITY', 'PERFORMANCE', 'STYLE', 'LOGIC']
+    for type_name in types_to_remove:
+        text = re.sub(rf'\b{type_name}\b\s*[-:]\s*', '', text, flags=re.IGNORECASE)
+    
+    # Supprimer les markdown
+    text = re.sub(r'```\w*', '', text)
+    text = re.sub(r'```', '', text)
+    
+    # Nettoyer les espaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
 
 
 def generate_summary(issues):
