@@ -34,9 +34,10 @@ def analyze_code(code, filename="temp.py"):
         bandit_issues = run_bandit(temp_path)
         #pip_audit_issues = run_pip_audit()
         ollama_issues = run_ollama(code)
+        pytest_issues = run_pytest(temp_path)
         
         # Combiner tous les problèmes
-        all_issues = flake8_issues + pylint_issues + bandit_issues + ollama_issues #+ pip_audit_issues
+        all_issues = flake8_issues + pylint_issues + bandit_issues + ollama_issues + pytest_issues #+ pip_audit_issues
         
         # Générer un résumé
         summary = generate_summary(all_issues)
@@ -112,6 +113,30 @@ def run_flake8(file_path):
     
     return issues
 
+def run_pytest(file_path):
+    """Exécute pytest et parse les erreurs de test"""
+    result = subprocess.run(
+        ["pytest", file_path, "--tb=short", "--disable-warnings", "-q"],
+        capture_output=True,
+        text=True
+    )
+    output = result.stdout + result.stderr
+
+    issues = []
+    for line in output.splitlines():
+        # Typical pytest failure line: "F test_example.py::test_add"
+        if line.strip().startswith("FAILED") or "AssertionError" in line:
+            issues.append({
+                "line": 0,
+                "column": 0,
+                "type": "test_failure",
+                "message": line.strip(),
+                "source": "pytest"
+            })
+
+    return issues
+
+
 def run_pylint(file_path):
     """Exécute Pylint sur le fichier et parse les résultats"""
     result = subprocess.run(
@@ -172,10 +197,10 @@ def run_ollama(code):
     """Exécute l'analyse de code via Ollama (modèle Deepseek)"""
     config = get_config()
     ollama_model = config.get("ollama", {}).get("model", "deepseek-coder:latest")
-    ollama_host = config.get("ollama", {}).get("host", "http://rnoft-41-82-191-116.a.free.pinggy.link")
+    ollama_host = config.get("ollama", {}).get("host", "http://rndbv-41-82-191-116.a.free.pinggy.link")
 
     try:
-        prompt = f"Analyse ce code Python et retourne les problèmes de qualité, sécurité ou optimisation :\n\n{code}"
+        prompt = f"Analyse ce code Python et retourne les problèmes de qualité, sécurité ou optimisation; suggère des codes si possible :\n\n{code}"
         response = requests.post(
             f"{ollama_host}/api/generate",
             json={"model": ollama_model, "prompt": prompt, "stream": False}
