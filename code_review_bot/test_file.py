@@ -17,4 +17,3 @@ def badly_formatted_code():
 
 insecure_function()
 
-#Modify file
